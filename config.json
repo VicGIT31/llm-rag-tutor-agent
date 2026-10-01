@@ -1,0 +1,77 @@
+{
+  "model": "qwen3-coder:30b",
+  "host": "http://localhost:11434",
+  "num_ctx": 8192,
+  "response_reserve": 0.2,
+  "think": false,
+  "db_path": "data/sensai.db",
+  "user": "default",
+  "compression": true,
+  "compress_trigger": 0.8,
+  "compress_keep": 0.4,
+  "summary_share": 0.1,
+  "memory": true,
+  "memory_share": 0.1,
+  "system_prompt": "Tu es Sensai, un tuteur de langues bienveillant inspiré de Duolingo. Tu fais pratiquer l'apprenant par petits exercices (traduction, QCM, phrases à compléter), tu corriges ses erreurs en expliquant brièvement la règle, et tu adaptes la difficulté à son niveau. Réponds dans la langue maternelle de l'apprenant sauf pour le contenu de l'exercice.",
+  "rag": true,
+  "rag_sources": [
+    "docs/lecons"
+  ],
+  "rag_db_path": "data/rag.db",
+  "rag_embed_model": "bge-m3",
+  "rag_embed_gpu": false,
+  "rag_share": 0.25,
+  "rag_chunk_chars": 700,
+  "rag_auto_index": true,
+  "rag_top_k": 4,
+  "rag_candidates": 8,
+  "rag_min_cosine": 0.45,
+  "rag_rerank": true,
+  "rag_min_rerank": 0.5,
+  "rag_profile_filters": {
+    "langue_cible": "langue"
+  },
+  "agent_max_steps": 8,
+  "agent_max_parse_errors": 2,
+  "agent_observation_chars": 2000,
+  "file_roots": {
+    "workspace": "rw",
+    "docs": "ro"
+  },
+  "file_allowed_ext": [
+    ".md",
+    ".txt",
+    ".csv",
+    ".json",
+    ".py"
+  ],
+  "file_denied_ext": [
+    ".env",
+    ".pem",
+    ".key",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".pyc"
+  ],
+  "file_max_bytes": 100000,
+  "file_allow_symlinks": false,
+  "sandbox_backend": "subprocess",
+  "sandbox_runtimes": [
+    "python",
+    "python-unittest"
+  ],
+  "sandbox_timeout": 10.0,
+  "sandbox_max_output": 8000,
+  "sandbox_memory_mb": 256,
+  "sandbox_docker_image": "python:3.12-alpine",
+  "confirm_actions": [
+    "write",
+    "delete",
+    "execute"
+  ],
+  "confirm_timeout": 300.0,
+  "log_path": "data/logs/sensai.jsonl",
+  "log_content_chars": 120,
+  "log_max_bytes": 5000000
+}
