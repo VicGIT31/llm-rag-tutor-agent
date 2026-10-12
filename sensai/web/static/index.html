@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Duolingoy</title>
+  <link rel="icon" href="/static/mascot.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img class="brand-mascot" src="/static/mascot.svg" alt="" width="36" height="36">
+      <span class="brand-name">Duolingoy</span>
+    </a>
+
+    <div class="modes" role="radiogroup" aria-label="Mode">
+      <button type="button" class="mode is-active" role="radio" aria-checked="true" data-mode="chat">Tuteur</button>
+      <button type="button" class="mode" role="radio" aria-checked="false" data-mode="agent">Agent</button>
+    </div>
+
+    <div class="topbar-end">
+      <label class="model-picker">
+        <span class="sr-only">Modèle</span>
+        <select id="model" title="Modèle Ollama"></select>
+      </label>
+      <span class="device" id="device" hidden></span>
+      <span class="status" id="status" data-state="idle" role="status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Connexion…</span>
+      </span>
+      <button type="button" class="icon-btn panel-toggle" id="panel-toggle" aria-controls="sidebar" aria-expanded="false" title="Progression et contexte">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M7 16V9M12 16V5M17 16v-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="sr-only">Progression et contexte</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main class="conversation">
+      <section class="thread" id="thread" aria-label="Conversation"></section>
+
+      <form class="composer" id="composer">
+        <div class="composer-box">
+          <textarea id="input" rows="1" maxlength="4000" placeholder="Écris à ton tuteur…" aria-label="Message"></textarea>
+          <button class="btn btn-primary" id="send" type="submit">Envoyer</button>
+          <button class="btn btn-danger" id="stop" type="button" hidden>Stop</button>
+        </div>
+        <p class="composer-hint" id="composer-hint">Entrée pour envoyer · Maj+Entrée pour aller à la ligne</p>
+      </form>
+    </main>
+
+    <aside class="sidebar" id="sidebar" aria-label="Progression et contexte">
+      <div class="sidebar-head">
+        <button type="button" class="icon-btn" id="sidebar-close" aria-label="Fermer le panneau">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Panneaux">
+        <button type="button" role="tab" id="tab-progress" aria-controls="panel-progress" aria-selected="true">Progrès</button>
+        <button type="button" role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1">Contexte</button>
+        <button type="button" role="tab" id="tab-profile" aria-controls="panel-profile" aria-selected="false" tabindex="-1">Profil</button>
+      </div>
+
+      <section class="panel" role="tabpanel" id="panel-progress" aria-labelledby="tab-progress">
+        <div class="stats" id="stats"></div>
+        <h2>Vocabulaire <span class="count" id="words-count"></span></h2>
+        <p class="hint">Révision espacée : chaque bonne réponse fait monter le mot d'une boîte, une erreur le renvoie en boîte 0.</p>
+        <ul class="words" id="words"></ul>
+        <h2>Erreurs à surveiller</h2>
+        <ul class="mistakes" id="mistakes"></ul>
+      </section>
+
+      <section class="panel" role="tabpanel" id="panel-context" aria-labelledby="tab-context" hidden>
+        <h2>Fenêtre de contexte</h2>
+        <p class="hint">Ce que le modèle a reçu au dernier message. Tout partage la même fenêtre : c'est Sensai qui choisit ce qui entre, pas Ollama qui coupe au hasard.</p>
+        <div class="gauge" id="gauge" role="img" aria-label="Aucun message envoyé"></div>
+        <ul class="legend" id="legend"></ul>
+        <p class="hint" id="ollama-count"></p>
+
+        <h2>Leçons utilisées</h2>
+        <ul class="sources" id="sources"></ul>
+
+        <h2>Résumé de la session</h2>
+        <div class="summary" id="summary"></div>
+        <button type="button" class="btn btn-secondary" id="compress">Résumer maintenant</button>
+
+        <h2>Monitoring</h2>
+        <dl class="metrics" id="metrics"></dl>
+      </section>
+
+      <section class="panel" role="tabpanel" id="panel-profile" aria-labelledby="tab-profile" hidden>
+        <h2>Apprenant <span class="count" id="learner"></span></h2>
+        <dl class="profile" id="profile"></dl>
+        <form class="profile-form" id="profile-form">
+          <input id="profile-key" list="profile-keys" maxlength="40" placeholder="clé" aria-label="Clé" required pattern="[\w\- ]+">
+          <datalist id="profile-keys">
+            <option value="langue_cible"></option>
+            <option value="niveau"></option>
+            <option value="langue_maternelle"></option>
+            <option value="objectif"></option>
+          </datalist>
+          <input id="profile-value" maxlength="200" placeholder="valeur" aria-label="Valeur" required>
+          <button class="btn btn-secondary" type="submit">Ajouter</button>
+        </form>
+
+        <h2>Sessions</h2>
+        <button type="button" class="btn btn-secondary" id="new-session">Nouvelle session</button>
+        <ul class="sessions" id="sessions"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>
