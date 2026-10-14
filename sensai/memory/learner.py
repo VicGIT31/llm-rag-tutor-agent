@@ -205,6 +205,20 @@ class LearnerMemory:
         ).fetchone()
         return row["n"], row["m"]
 
+    def totals(self, user: str) -> dict:
+        """Every language together, for the learner list and the history view."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS words, COALESCE(SUM(box >= ?), 0) AS mastered,
+                      COUNT(DISTINCT language) AS languages FROM vocabulary WHERE user = ?""",
+            (MASTERED_BOX, user),
+        ).fetchone()
+        return dict(row)
+
+    def delete_user(self, user: str) -> None:
+        with self.conn:
+            for table in ("vocabulary", "mistakes", "memory_ops"):
+                self.conn.execute(f"DELETE FROM {table} WHERE user = ?", (user,))
+
     # --- mistakes -------------------------------------------------------
 
     def add_mistake(self, user: str, language: str, pattern: str, correction: str, example: str = "") -> None:

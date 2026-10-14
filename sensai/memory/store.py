@@ -1,15 +1,21 @@
-"""SQLite persistence: sessions, messages and learner profiles (M1).
+"""SQLite persistence: learners, sessions, messages and learner profiles (M1).
 
 The same database will host the structured learner memory (M3: vocabulary,
 recurring errors...) so everything about a learner lives in one place.
 """
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    name        TEXT PRIMARY KEY,
+    created_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
     id          INTEGER PRIMARY KEY,
     user        TEXT NOT NULL,
@@ -23,7 +29,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role        TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),
     content     TEXT NOT NULL,
     tokens      INTEGER,
-    created_at  REAL NOT NULL
+    created_at  REAL NOT NULL,
+    meta        TEXT  -- JSON: switched-off features, lesson sources (assistant messages)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
 CREATE TABLE IF NOT EXISTS profile (
@@ -62,6 +69,7 @@ class Message:
     content: str
     tokens: int | None = None
     id: int | None = None
+    meta: dict | None = None  # stored with the message, never sent to the model
 
     def to_ollama(self) -> dict:
         return {"role": self.role, "content": self.content}
@@ -75,6 +83,25 @@ class SessionInfo:
     message_count: int
 
 
+@dataclass
+class UserInfo:
+    name: str
+    created_at: float
+    sessions: int
+    messages: int
+    last_active: float | None
+
+
+# Databases created before learners had their own table or messages their metadata.
+MIGRATIONS = [
+    ("messages", "meta", "ALTER TABLE messages ADD COLUMN meta TEXT"),
+]
+BACKFILL_USERS = """
+INSERT OR IGNORE INTO users (name, created_at) SELECT user, MIN(created_at) FROM sessions GROUP BY user;
+INSERT OR IGNORE INTO users (name, created_at) SELECT user, MIN(updated_at) FROM profile GROUP BY user;
+"""
+
+
 class MemoryStore:
     def __init__(self, db_path: str):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -82,9 +109,51 @@ class MemoryStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        for table, column, sql in MIGRATIONS:
+            if column not in {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
+                self.conn.execute(sql)
+        self.conn.executescript(BACKFILL_USERS)
 
     def close(self) -> None:
         self.conn.close()
+
+    # --- learners -------------------------------------------------------
+
+    def add_user(self, name: str) -> bool:
+        """Register a learner; False if it already exists."""
+        with self.conn:
+            cur = self.conn.execute("INSERT OR IGNORE INTO users (name, created_at) VALUES (?, ?)", (name, time.time()))
+        return cur.rowcount > 0
+
+    def user_exists(self, name: str) -> bool:
+        return self.conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone() is not None
+
+    def list_users(self) -> list[UserInfo]:
+        rows = self.conn.execute(
+            """SELECT u.name, u.created_at, COUNT(DISTINCT s.id) AS sessions, COUNT(m.id) AS messages,
+                      MAX(m.created_at) AS last_active
+               FROM users u LEFT JOIN sessions s ON s.user = u.name LEFT JOIN messages m ON m.session_id = s.id
+               GROUP BY u.name ORDER BY last_active IS NULL, last_active DESC, u.name"""
+        ).fetchall()
+        return [UserInfo(r["name"], r["created_at"], r["sessions"], r["messages"], r["last_active"]) for r in rows]
+
+    def delete_user(self, name: str) -> bool:
+        """Delete a learner, its sessions (messages, summaries cascade) and profile."""
+        with self.conn:
+            self.conn.execute("DELETE FROM sessions WHERE user = ?", (name,))
+            self.conn.execute("DELETE FROM profile WHERE user = ?", (name,))
+            cur = self.conn.execute("DELETE FROM users WHERE name = ?", (name,))
+        return cur.rowcount > 0
+
+    def activity(self, user: str) -> dict[str, int]:
+        """Learner messages per local day (YYYY-MM-DD), for the history view."""
+        rows = self.conn.execute(
+            """SELECT date(m.created_at, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+               FROM messages m JOIN sessions s ON s.id = m.session_id
+               WHERE s.user = ? AND m.role = 'user' GROUP BY day ORDER BY day""",
+            (user,),
+        ).fetchall()
+        return {r["day"]: r["n"] for r in rows}
 
     # --- sessions -------------------------------------------------------
 
@@ -122,8 +191,9 @@ class MemoryStore:
         now = time.time()
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO messages (session_id, role, content, tokens, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, msg.role, msg.content, msg.tokens, now),
+                "INSERT INTO messages (session_id, role, content, tokens, created_at, meta) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, msg.role, msg.content, msg.tokens, now,
+                 json.dumps(msg.meta, ensure_ascii=False) if msg.meta else None),
             )
             msg.id = cur.lastrowid
             self.conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
@@ -136,10 +206,13 @@ class MemoryStore:
 
     def load_messages(self, session_id: int, after_id: int = 0) -> list[Message]:
         rows = self.conn.execute(
-            "SELECT id, role, content, tokens FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
+            "SELECT id, role, content, tokens, meta FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
             (session_id, after_id),
         ).fetchall()
-        return [Message(r["role"], r["content"], r["tokens"], r["id"]) for r in rows]
+        return [
+            Message(r["role"], r["content"], r["tokens"], r["id"], json.loads(r["meta"]) if r["meta"] else None)
+            for r in rows
+        ]
 
     def count_messages(self, session_id: int) -> int:
         row = self.conn.execute("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?", (session_id,)).fetchone()
@@ -210,3 +283,22 @@ class MemoryStore:
         with self.conn:
             cur = self.conn.execute("DELETE FROM profile WHERE user = ? AND key = ?", (user, key))
         return cur.rowcount > 0
+
+
+def streak(days: set[str], today: date | None = None) -> int:
+    """Consecutive active days ending today (or yesterday: the day is not over yet)."""
+    day = today or date.today()
+    if day.isoformat() not in days:
+        day -= timedelta(days=1)
+    count = 0
+    while day.isoformat() in days:
+        count += 1
+        day -= timedelta(days=1)
+    return count
+
+
+def last_days(activity: dict[str, int], n: int, today: date | None = None) -> list[dict]:
+    """The last n days, oldest first, with 0 for the days without any message."""
+    end = today or date.today()
+    days = [end - timedelta(days=i) for i in range(n - 1, -1, -1)]
+    return [{"day": d.isoformat(), "messages": activity.get(d.isoformat(), 0)} for d in days]
