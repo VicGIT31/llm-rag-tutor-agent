@@ -107,6 +107,10 @@ class Rag:
         self.embedder = embedder or OllamaEmbedder(config.host, config.rag_embed_model, gpu=config.rag_embed_gpu)
         self.store = store or RagStore(config.rag_db_path)
         self.filters: list[Filter] = []  # explicit, set with /rag filter
+        # R2 stages, switchable at runtime to show what each one brings (features.py)
+        self.hybrid = config.rag_hybrid
+        self.rerank = config.rag_rerank
+        self.profile_filters = True  # off: rag_profile_filters is ignored
         self.last_query = ""
         self.last_hits: list[Hit] = []
         self.last_status = ""
@@ -155,6 +159,8 @@ class Rag:
     def active_filters(self) -> list[Filter]:
         """Explicit filters + soft filters derived from the learner profile (config.rag_profile_filters)."""
         active = list(self.filters)
+        if not self.profile_filters:
+            return active
         explicit = {f.key for f in active}
         profile = self.profile_fn() if self.profile_fn else {}
         for profile_key, meta_key in self.config.rag_profile_filters.items():
@@ -177,7 +183,10 @@ class Rag:
 
         if pool:
             qvec = self.embedder.embed([query])[0]
-            lexical = bm25_scores(tokenize(query), [self._doc_tokens(c) for c in pool])
+            if self.hybrid:
+                lexical = bm25_scores(tokenize(query), [self._doc_tokens(c) for c in pool])
+            else:
+                lexical = [0.0] * len(pool)  # dense only: the lexical ranking below stays empty
             hits = [Hit(c, sum(a * b for a, b in zip(qvec, c.vec)), s) for c, s in zip(pool, lexical)]
 
             by_dense = sorted(hits, key=lambda h: -h.cosine)
@@ -194,7 +203,7 @@ class Rag:
                 h.reason = f"hors des {cfg.rag_candidates} meilleurs candidats"
             alive = alive[: cfg.rag_candidates]
 
-            if cfg.rag_rerank and alive:
+            if self.rerank and alive:
                 rerank_status = self._rerank(query, alive, interaction_id)
                 for h in alive:
                     if h.rerank is not None and h.rerank < cfg.rag_min_rerank:
@@ -225,6 +234,7 @@ class Rag:
             after_filters=len(pool),
             kept=sum(h.kept for h in hits),
             rerank=rerank_status,
+            hybrid=self.hybrid,
             filters=[str(f) for f in filters],
         )
         return hits
@@ -283,7 +293,8 @@ class Rag:
             f"RAG : {stats['documents']} document(s), {stats['chunks']} morceaux — embeddings {cfg.rag_embed_model}",
             f"Filtres actifs : {filters}",
             f"Seuils : cosinus ≥ {cfg.rag_min_cosine}, "
-            + (f"rerank ≥ {cfg.rag_min_rerank * 10:.0f}/10" if cfg.rag_rerank else "rerank désactivé")
+            + (f"rerank ≥ {cfg.rag_min_rerank * 10:.0f}/10" if self.rerank else "rerank désactivé")
+            + ("" if self.hybrid else ", BM25 désactivé")
             + f"; {cfg.rag_candidates} candidats → {cfg.rag_top_k} morceaux max",
         ]
         if self.last_query:

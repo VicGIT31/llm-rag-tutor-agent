@@ -25,6 +25,7 @@
   "rag_auto_index": true,
   "rag_top_k": 4,
   "rag_candidates": 8,
+  "rag_hybrid": true,
   "rag_min_cosine": 0.45,
   "rag_rerank": true,
   "rag_min_rerank": 0.5,

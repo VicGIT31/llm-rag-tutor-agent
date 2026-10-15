@@ -37,6 +37,7 @@ class Config:
     rag_auto_index: bool = True  # sync the index at startup (only changed files are embedded)
     rag_top_k: int = 4  # chunks injected at most
     rag_candidates: int = 8  # chunks sent to the reranker
+    rag_hybrid: bool = True  # fuse BM25 with the cosine ranking (off = dense search only)
     rag_min_cosine: float = 0.30  # gate 1; model- and corpus-dependent, calibrate with /rag search
     rag_rerank: bool = True  # one extra model call per message that has candidates
     rag_min_rerank: float = 0.5  # gate 2, on the 0-1 rerank score

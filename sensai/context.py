@@ -42,6 +42,15 @@ class ContextReport:
     history_dropped: int = 0
     sections: list[str] = field(default_factory=list)
 
+    def to_dict(self, num_ctx: int) -> dict:
+        """For the web UI: tokens per section of the prompt."""
+        return {
+            "num_ctx": num_ctx, "budget": self.budget, "used": self.used,
+            "system": self.system_tokens, "memory": self.memory_tokens, "summary": self.summary_tokens,
+            "rag": self.rag_tokens, "history": self.history_tokens,
+            "kept": self.history_kept, "dropped": self.history_dropped,
+        }
+
 
 class ContextBuilder:
     def __init__(
