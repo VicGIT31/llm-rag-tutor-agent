@@ -20,11 +20,13 @@ from concurrent.futures import Future
 from dataclasses import asdict
 from typing import TypeVar
 
+from .. import features
 from ..agent.approval import ApprovalRequest, Decision
 from ..agent.react import Step
 from ..cli import Chat, build_agent, build_rag, load_model
+from ..compare import compare
 from ..config import Config
-from ..memory.store import MemoryStore
+from ..memory.store import MemoryStore, last_days, streak
 from ..observability import EventLogger
 from ..ollama_client import OllamaClient, OllamaError, Placement
 
@@ -237,6 +239,20 @@ class Engine:
 
         return self.stream(work)
 
+    def compare_events(self, text: str, feature: str, judge: bool) -> Iterator[dict]:
+        """The same message with and without one feature, both answers streamed (nothing is stored)."""
+
+        def work(chat: Chat, emit: Emit, cancel: threading.Event) -> None:
+            run = compare(chat, text, feature, judge)
+            for event in run:
+                emit(event)
+                if cancel.is_set():
+                    run.close()  # puts the switches and the side panel state back
+                    emit({"type": "stopped"})
+                    return
+
+        return self.stream(work)
+
     def set_model(self, model: str) -> str:
         """Switch every model call (chat, memory, compression, rerank, agent) to `model`."""
 
@@ -282,20 +298,62 @@ def state_snapshot(chat: Chat) -> dict:
         "session": chat.session_id,
         "profile": chat.store.get_profile(user),
         "messages": [
-            {"id": m.id, "role": m.role, "content": m.content}
+            {"id": m.id, "role": m.role, "content": m.content, "meta": m.meta}
             for m in chat.store.load_messages(chat.session_id)
         ],
         "summarized_until": saved[1] if saved else 0,  # messages up to this id live in the summary (M2)
         "summary": chat.summary.render() if chat.summary and not chat.summary.is_empty() else None,
         "features": {
-            "memory": chat.config.memory,
-            "compression": chat.config.compression,
-            "rag": chat.rag is not None,
+            "memory": chat.switches["memory"],
+            "compression": chat.switches["compression"],
+            "rag": chat.context.retriever is not None,
             "agent": chat.agent is not None,
         },
+        "switches": features_snapshot(chat),
         "num_ctx": chat.config.num_ctx,
         "budget": chat.context.budget,
         "last_turn": turn_report(chat) if chat.last_report is not None else None,  # survives a page reload
+    }
+
+
+def features_snapshot(chat: Chat) -> list[dict]:
+    return features.describe(chat.switches, chat.feature_available())
+
+
+def users_snapshot(chat: Chat) -> list[dict]:
+    rows = []
+    for u in chat.store.list_users():
+        rows.append({
+            "name": u.name, "created_at": u.created_at, "sessions": u.sessions, "messages": u.messages,
+            "last_active": u.last_active, "language": chat.store.get_profile(u.name).get("langue_cible", ""),
+            "words": chat.learner.totals(u.name)["words"], "current": u.name == chat.config.user,
+        })
+    return rows
+
+
+def history_snapshot(chat: Chat, days: int = 14) -> dict:
+    """The learner's history: activity per day, streak, totals, and the sessions that have messages."""
+    user = chat.config.user
+    activity = chat.store.activity(user)
+    sessions = [s for s in chat.store.list_sessions(user, limit=200) if s.message_count or s.id == chat.session_id]
+    totals = chat.learner.totals(user)
+    return {
+        "user": user,
+        "streak": streak(set(activity)),
+        "active_days": len(activity),
+        "first_day": min(activity) if activity else None,
+        "messages": sum(activity.values()),
+        "sessions_count": sum(1 for s in sessions if s.message_count),
+        "words": totals["words"],
+        "mastered": totals["mastered"],
+        "days": last_days(activity, days),
+        "sessions": [
+            {
+                "id": s.id, "title": s.title, "updated_at": s.updated_at,
+                "messages": s.message_count, "current": s.id == chat.session_id,
+            }
+            for s in sessions
+        ],
     }
 
 
@@ -333,41 +391,22 @@ def turn_report(chat: Chat) -> dict:
     if report is None:
         return {"context": None, "sources": []}
     ctx = chat.context
-    sources = []
-    if chat.rag is not None and chat.rag.last_query:
-        sources = [
-            {
-                "source": h.chunk.source, "part": h.chunk.ord, "title": h.chunk.text.splitlines()[0],
-                "cosine": round(h.cosine, 2), "bm25": round(h.bm25, 2),
-                "rerank": None if h.rerank is None else round(h.rerank * 10),
-            }
-            for h in chat.rag.last_hits
-            if h.kept
-        ]
     return {
         "context": {
-            "num_ctx": chat.config.num_ctx,
-            "budget": report.budget,
-            "used": report.used,
-            "system": report.system_tokens,
-            "memory": report.memory_tokens,
-            "summary": report.summary_tokens,
-            "rag": report.rag_tokens,
-            "history": report.history_tokens,
-            "kept": report.history_kept,
-            "dropped": report.history_dropped,
+            **report.to_dict(chat.config.num_ctx),
             "caps": {
                 "memory": ctx.memory_cap,
                 "summary": ctx.summary_cap,
-                "rag": int(ctx.budget * ctx.rag_share) if chat.rag is not None else 0,
+                "rag": int(ctx.budget * ctx.rag_share) if ctx.retriever is not None else 0,
             },
         },
+        "off": chat.last_off,
         "ollama": {
             "prompt_tokens": chat.last_stats.prompt_eval_count,
             "output_tokens": chat.last_stats.eval_count,
             "duration_ms": round(chat.last_stats.total_duration_ms),
         },
-        "sources": sources,
+        "sources": chat.last_sources,
     }
 
 

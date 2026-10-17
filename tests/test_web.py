@@ -275,6 +275,56 @@ class ApiTest(WebTestCase):
         self.assertEqual(rebound.status_code, 400)
         self.assertNotIn("access-control-allow-origin", {k.lower() for k in resp.headers})
 
+    def test_learners_and_their_history(self):
+        self.events("/api/chat", {"text": "neko ?"})
+        users = requests.get(self.url + "/api/users", timeout=5).json()["users"]
+        self.assertEqual([(u["name"], u["current"], u["words"]) for u in users], [("camille", True, 1)])
+        history = requests.get(self.url + "/api/history", timeout=5).json()
+        self.assertEqual((history["messages"], history["streak"], history["sessions_count"]), (1, 1, 1))
+        self.assertEqual(len(history["days"]), 14)
+        self.assertEqual(history["days"][-1]["messages"], 1)
+        session = history["sessions"][0]["id"]
+
+        created = requests.post(self.url + "/api/users", json={"name": "hugo"}, timeout=5).json()
+        self.assertEqual((created["user"], created["messages"], created["profile"]), ("hugo", [], {}))
+        self.assertEqual(requests.post(self.url + "/api/users", json={"name": "hugo"}, timeout=5).status_code, 409)
+        self.assertEqual(requests.post(self.url + "/api/users", json={"name": "../x"}, timeout=5).status_code, 422)
+        self.assertEqual(requests.get(f"{self.url}/api/sessions/{session}", timeout=5).status_code, 404)  # camille's
+        self.assertEqual(requests.delete(self.url + "/api/users/hugo", timeout=5).status_code, 409)  # current
+
+        back = requests.post(self.url + "/api/users/camille/select", timeout=5).json()
+        self.assertEqual((back["session"], len(back["messages"])), (session, 2))
+        read = requests.get(f"{self.url}/api/sessions/{session}", timeout=5).json()
+        self.assertEqual([m["role"] for m in read["messages"]], ["user", "assistant"])
+        self.assertEqual(requests.post(self.url + "/api/users/nobody/select", timeout=5).status_code, 404)
+        remaining = requests.delete(self.url + "/api/users/hugo", timeout=5).json()["users"]
+        self.assertEqual([u["name"] for u in remaining], ["camille"])
+
+    def test_feature_switches_and_comparison(self):
+        switches = {f["id"]: f for f in requests.get(self.url + "/api/features", timeout=5).json()["features"]}
+        self.assertTrue(switches["memory"]["enabled"])
+        self.assertFalse(switches["rag"]["available"])
+        off = requests.put(self.url + "/api/features/memory", json={"enabled": False}, timeout=5).json()["features"]
+        self.assertFalse(next(f for f in off if f["id"] == "memory")["enabled"])
+        self.assertEqual(requests.put(self.url + "/api/features/rag", json={"enabled": True}, timeout=5).status_code, 409)
+        self.assertEqual(requests.put(self.url + "/api/features/nope", json={"enabled": True}, timeout=5).status_code, 404)
+
+        events = self.events("/api/chat", {"text": "neko ?"})
+        done = next(e for e in events if e["type"] == "done")
+        self.assertEqual(done["off"], ["memory"])
+        state = requests.get(self.url + "/api/state", timeout=5).json()
+        self.assertEqual(state["messages"][-1]["meta"], {"off": ["memory"]})
+        self.assertFalse(state["features"]["memory"])
+        requests.post(self.url + "/api/features/reset", timeout=5)
+
+        self.client.answer = ["Tu ", "es Camille."]
+        events = self.events("/api/compare", {"text": "Comment je m'appelle ?", "feature": "history", "judge": False})
+        self.assertEqual([e["side"] for e in events if e["type"] == "side"], ["on", "off"])
+        self.assertEqual(events[-1]["type"], "end")
+        self.assertEqual(len(requests.get(self.url + "/api/state", timeout=5).json()["messages"]), 2)  # nothing stored
+        self.assertEqual(requests.post(self.url + "/api/compare", json={"text": "x", "feature": "rag"}, timeout=5).status_code, 409)
+        self.assertEqual(requests.post(self.url + "/api/compare", json={"text": "x", "feature": "nope"}, timeout=5).status_code, 404)
+
     def test_input_validation_models_and_metrics(self):
         self.assertEqual(requests.post(self.url + "/api/chat", json={"text": "   "}, timeout=5).status_code, 422)
         self.assertEqual(requests.post(self.url + "/api/chat", json={"text": "x" * 4001}, timeout=5).status_code, 422)

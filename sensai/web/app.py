@@ -22,9 +22,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..cli import Chat
+from ..features import FeatureError
 from ..monitoring import compute_metrics, load_events
 from ..ollama_client import OllamaError
-from .engine import Engine, memory_snapshot, state_snapshot
+from .engine import Engine, features_snapshot, history_snapshot, memory_snapshot, state_snapshot, users_snapshot
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
@@ -50,6 +51,20 @@ class ProfileIn(BaseModel):
 
 class ModelIn(BaseModel):
     model: str = Field(min_length=1, max_length=200)
+
+
+class UserIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40, pattern=r"^[\w\-]+$")
+
+
+class SwitchIn(BaseModel):
+    enabled: bool
+
+
+class CompareIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    feature: str = Field(min_length=1, max_length=40)
+    judge: bool = True
 
 
 def sse(events: Iterator[dict]) -> StreamingResponse:
@@ -99,6 +114,20 @@ def create_app(engine: Engine, allowed_hosts: list[str] | None = None) -> FastAP
     def agent(body: TaskIn) -> StreamingResponse:
         return sse(engine.agent_events(not_blank(body.task)))
 
+    @app.post("/api/compare", summary="Même message avec et sans une fonctionnalité, côte à côte (SSE, rien n'est enregistré)")
+    def compare(body: CompareIn) -> StreamingResponse:
+        text = not_blank(body.text)
+
+        def check(chat: Chat) -> None:
+            try:
+                if not chat.feature_available()[body.feature]:
+                    raise HTTPException(409, "fonctionnalité indisponible (RAG désactivé au démarrage)")
+            except KeyError:
+                raise HTTPException(404, f"fonctionnalité inconnue : {body.feature}") from None
+
+        engine.call(check)  # a bad request gets a status code, not an error event
+        return sse(engine.compare_events(text, body.feature, body.judge))
+
     @app.post("/api/stop", summary="Arrêter la réponse ou la tâche en cours")
     def stop() -> dict:
         engine.stop()
@@ -147,6 +176,88 @@ def create_app(engine: Engine, allowed_hosts: list[str] | None = None) -> FastAP
             return chat.store.get_profile(chat.config.user)
 
         return {"profile": engine.call(delete)}
+
+    # --- learners and their history (M1) -----------------------------------------
+
+    @app.get("/api/users", summary="Apprenants enregistrés")
+    def users() -> dict:
+        return {"users": engine.call(users_snapshot)}
+
+    @app.post("/api/users", summary="Créer un apprenant et passer à son profil")
+    def create_user(body: UserIn) -> dict:
+        def create(chat: Chat) -> dict:
+            if chat.store.user_exists(body.name):
+                raise HTTPException(409, f"l'apprenant « {body.name} » existe déjà")
+            chat.switch_user(body.name)
+            return state_snapshot(chat)
+
+        return engine.call(create)
+
+    @app.post("/api/users/{name}/select", summary="Passer à un autre apprenant (reprend sa dernière session)")
+    def select_user(name: str) -> dict:
+        def select(chat: Chat) -> dict:
+            if not chat.store.user_exists(name):
+                raise HTTPException(404, f"apprenant « {name} » introuvable")
+            chat.switch_user(name)
+            return state_snapshot(chat)
+
+        return engine.call(select)
+
+    @app.delete("/api/users/{name}", summary="Supprimer un apprenant, ses sessions et sa mémoire")
+    def delete_user(name: str) -> dict:
+        def delete(chat: Chat) -> list[dict]:
+            try:
+                if not chat.delete_user(name):
+                    raise HTTPException(404, f"apprenant « {name} » introuvable")
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return users_snapshot(chat)
+
+        return {"users": engine.call(delete)}
+
+    @app.get("/api/history", summary="Historique de l'apprenant : activité par jour, série, sessions")
+    def history() -> dict:
+        return engine.call(history_snapshot)
+
+    @app.get("/api/sessions/{session_id}", summary="Lire une session sans la reprendre")
+    def read_session(session_id: int) -> dict:
+        def read(chat: Chat) -> dict:
+            if not chat.store.session_exists(chat.config.user, session_id):
+                raise HTTPException(404, f"session #{session_id} introuvable")
+            return {
+                "id": session_id,
+                "messages": [
+                    {"id": m.id, "role": m.role, "content": m.content, "meta": m.meta}
+                    for m in chat.store.load_messages(session_id)
+                ],
+            }
+
+        return engine.call(read)
+
+    # --- feature switches (features.py) ----------------------------------------
+
+    @app.get("/api/features", summary="Fonctionnalités activables et leur état")
+    def feature_list() -> dict:
+        return {"features": engine.call(features_snapshot)}
+
+    @app.put("/api/features/{feature_id}", summary="Couper ou rétablir une fonctionnalité")
+    def switch_feature(feature_id: str, body: SwitchIn) -> dict:
+        def switch(chat: Chat) -> list[dict]:
+            try:
+                chat.set_feature(feature_id, body.enabled)
+            except FeatureError as exc:
+                raise HTTPException(404 if feature_id not in chat.switches else 409, str(exc)) from exc
+            return features_snapshot(chat)
+
+        return {"features": engine.call(switch)}
+
+    @app.post("/api/features/reset", summary="Revenir aux réglages de config.json")
+    def reset_features() -> dict:
+        def reset(chat: Chat) -> list[dict]:
+            chat.reset_features()
+            return features_snapshot(chat)
+
+        return {"features": engine.call(reset)}
 
     # --- sessions and context (M1, M2) ------------------------------------------
 
