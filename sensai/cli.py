@@ -1,18 +1,21 @@
 """Interactive CLI loop."""
 
+import re
 import sqlite3
 import sys
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 
+from . import features
 from .agent.approval import ApprovalGate, ConsoleApprover
 from .agent.permissions import FileGuard
 from .agent.react import AgentResult, ReActAgent, Step
 from .agent.sandbox import Sandbox
 from .agent.tools import ToolRegistry
+from .compare import compare, kept_sources
 from .config import Config, ConfigError, load_config
-from .context import ContextBuilder
+from .context import ContextBuilder, ContextReport
 from .memory.compressor import CompressionError, Compressor, Summary, compress
 from .memory.extractor import ExtractionError, MemoryExtractor
 from .memory.learner import LearnerMemory
@@ -46,10 +49,19 @@ HELP = """Commandes :
   /rag filter <k=v> ...      filtrer par métadonnées : niveau=A1  langue=japonais  date>=2026-09-01
                              (a,b = l'un ou l'autre) ; /rag filter clear pour retirer les filtres
   /rag index                 resynchroniser l'index (seuls les fichiers modifiés sont recalculés)
+  /users                     lister les apprenants
+  /user <nom>                passer à un autre apprenant (créé s'il n'existe pas) ; reprend sa dernière session
+  /features                  fonctionnalités activables (historique, profil, mémoire, résumé, RAG…)
+  /feature <id> on|off       couper ou rétablir une fonctionnalité ; /feature reset pour revenir à config.json
+  /compare <id> <question>   poser la même question avec et sans la fonctionnalité, côte à côte
+                             (rien n'est enregistré)
   /trace                     étapes de la dernière tâche agent
   /tools                     outils de l'agent, permissions et limites
   /metrics                   métriques du système (latence, tokens, erreurs, outils…)
   /quit                      quitter"""
+
+
+USER_NAME = re.compile(r"^[\w-]{1,40}$")
 
 
 class Chat:
@@ -79,6 +91,10 @@ class Chat:
             memory_share=config.memory_share,
         )
         self.compressor = Compressor(client, config.compress_trigger, config.compress_keep)
+        # Runtime switches (features.py): each one gates a source of context at every turn.
+        self.switches = features.defaults(config, rag is not None)
+        self._apply_switches()
+        store.add_user(config.user)
         self.session_id = store.create_session(config.user)
         self.history: list[Message] = []  # unsummarized turns only
         self.summary: Summary | None = None
@@ -93,12 +109,64 @@ class Chat:
         self.last_report = None
         self.last_stats = ChatStats()  # real token counts of the last answer, from Ollama
         self.interrupted = False  # was the last answer cut short?
+        self.last_sources: list[dict] = []  # lesson chunks used by the last answer
+        self.last_off: list[str] = []  # features switched off for the last answer
         # Side messages ([mémoire : …], [compression …]): stderr in the terminal, events in the web UI.
         self.notify: Callable[[str], None] = lambda message: print(message, file=sys.stderr)
 
     @property
     def language(self) -> str:
         return self.store.get_profile(self.config.user).get("langue_cible", "")
+
+    # --- feature switches (features.py) -----------------------------------
+
+    def feature_available(self) -> dict[str, bool]:
+        return {f.id: self.rag is not None or f.group != "RAG" for f in features.FEATURES}
+
+    def set_feature(self, feature_id: str, enabled: bool) -> None:
+        feature = features.check(feature_id)
+        if enabled and not self.feature_available()[feature_id]:
+            raise features.FeatureError(f"{feature.label} : indisponible (RAG désactivé au démarrage)")
+        self.switches[feature_id] = enabled
+        self._apply_switches()
+        self.logger.log("feature_switch", feature=feature_id, enabled=enabled)
+
+    def reset_features(self) -> None:
+        self.switches = features.defaults(self.config, self.rag is not None)
+        self._apply_switches()
+        self.logger.log("feature_switch", feature="*", enabled=None)
+
+    def _apply_switches(self) -> None:
+        sw = self.switches
+        self.context.retriever = self.rag if sw["rag"] else None  # its share of the budget goes back to history
+        if self.rag is not None:
+            self.rag.hybrid, self.rag.rerank, self.rag.profile_filters = sw["rag_hybrid"], sw["rag_rerank"], sw["rag_filters"]
+
+    def prompt_profile(self) -> dict[str, str]:
+        return self.store.get_profile(self.config.user) if self.switches["profile"] else {}
+
+    # --- learners (M1) ------------------------------------------------------
+
+    def switch_user(self, name: str) -> bool:
+        """Become learner `name` (created if new) and resume its latest session; True if created."""
+        if not USER_NAME.match(name):
+            raise ValueError("nom d'apprenant : 1 à 40 lettres, chiffres, - ou _")
+        self.apply_pending()  # the last exchange still belongs to the previous learner
+        created = self.store.add_user(name)
+        self.config.user = name
+        latest = self.store.latest_session(name)
+        if latest is None or not self.load_session(latest):
+            self.new_session()
+        self.last_report, self.last_memory, self.last_sources, self.last_off = None, None, [], []
+        self.logger.log("user_switch", user=name, created=created)
+        return created
+
+    def delete_user(self, name: str) -> bool:
+        """Forget a learner entirely; never the current one."""
+        if name == self.config.user:
+            raise ValueError("impossible de supprimer l'apprenant en cours : change d'apprenant d'abord")
+        self.learner.delete_user(name)
+        return self.store.delete_user(name)
 
     def close(self) -> None:
         self.apply_pending()
@@ -110,12 +178,14 @@ class Chat:
         self.session_id = self.store.create_session(self.config.user)
         self.history = []
         self.summary = None
+        self.compress_backoff = 0
 
     def load_session(self, session_id: int) -> bool:
         """M1: resume a session of this learner: its summary, then only the messages after it."""
         if not self.store.session_exists(self.config.user, session_id):
             return False
         self.session_id = session_id
+        self.compress_backoff = 0
         saved = self.store.get_summary(session_id)
         self.summary = Summary.from_json(saved[0]) if saved else None
         self.history = self.store.load_messages(session_id, after_id=saved[1] if saved else 0)
@@ -191,6 +261,26 @@ class Chat:
                 self.run_agent(task)
         elif cmd == "/rag":
             self._rag(line)
+        elif cmd == "/users":
+            for u in self.store.list_users():
+                mark = "*" if u.name == user else " "
+                when = datetime.fromtimestamp(u.last_active).strftime("%Y-%m-%d %H:%M") if u.last_active else "jamais"
+                print(f"{mark} {u.name:<20} {u.sessions:>3} sessions  {u.messages:>4} msg  dernière activité : {when}")
+        elif cmd == "/user":
+            if len(parts) != 2:
+                print("Usage : /user <nom>")
+            else:
+                try:
+                    created = self.switch_user(parts[1])
+                except ValueError as exc:
+                    print(exc)
+                else:
+                    total = self.store.count_messages(self.session_id)
+                    print(f"Apprenant « {parts[1]} »{' créé' if created else ''} — session #{self.session_id} ({total} messages)")
+        elif cmd in ("/features", "/feature"):
+            self._features(parts[1:])
+        elif cmd == "/compare":
+            self._compare(line)
         elif cmd == "/trace":
             print(self.last_agent.trace() if self.last_agent else "Aucune tâche agent pour l'instant.")
         elif cmd == "/tools":
@@ -223,6 +313,51 @@ class Chat:
             print("Supprimé" if self.store.delete_profile_key(user, args[1]) else "Clé absente")
         else:
             print("Usage : /profile | /profile set <clé> <valeur> | /profile del <clé>")
+
+    def _features(self, args: list[str]) -> None:
+        if args == ["reset"]:
+            self.reset_features()
+        elif len(args) == 2 and args[1] in ("on", "off"):
+            try:
+                self.set_feature(args[0], args[1] == "on")
+            except ValueError as exc:
+                print(exc)
+                return
+        elif args:
+            print("Usage : /features | /feature <id> on|off | /feature reset")
+            return
+        available = self.feature_available()
+        for f in features.FEATURES:
+            state = "on " if self.switches[f.id] else "off"
+            if not available[f.id]:
+                state = "n/a"
+            print(f"  [{state}] {f.id:<12} {f.code}  {f.label} — {f.does}")
+
+    def _compare(self, line: str) -> None:
+        args = line.split(maxsplit=2)[1:]
+        if len(args) < 2:
+            print("Usage : /compare <id> <question>   ex. /compare rag Qu'est-ce qui tombe à l'interro de vendredi ?")
+            return
+        try:
+            for event in compare(self, args[1], args[0]):
+                kind = event["type"]
+                if kind == "side":
+                    print(f"\n── {event['label']} " + "─" * 30)
+                elif kind == "token":
+                    print(event["text"], end="", flush=True)
+                elif kind == "side_done":
+                    srcs = ", ".join(f"{s['source'].split('/')[-1]}#{s['part']}" for s in event["sources"]) or "aucune leçon"
+                    print(f"\n[{event['context']['used']} tokens de prompt — {srcs} — {event['duration_ms'] / 1000:.1f} s]")
+                elif kind == "verdict":
+                    print(f"\n── Arbitrage du modèle ──\n{event['on_label']} : {event['on']['score']}/10 — {event['on']['reason']}")
+                    print(f"{event['off_label']} : {event['off']['score']}/10 — {event['off']['reason']}")
+                    print(event["verdict"])
+                elif kind == "notice":
+                    print(event["text"])
+        except KeyboardInterrupt:
+            print("\n[comparaison interrompue]")
+        except (ValueError, OllamaError) as exc:
+            print(f"Erreur : {exc}")
 
     def _rag(self, line: str) -> None:
         if self.rag is None:
@@ -268,10 +403,13 @@ class Chat:
         if r is None:
             print("Aucun message envoyé pour l'instant.")
             return
+        off = features.disabled(self.switches, self.feature_available())
+        if off:
+            print("Fonctionnalités coupées : " + ", ".join(features.BY_ID[i].label for i in off))
         print(
             f"Budget {r.used}/{r.budget} tokens (estimés) — système+profil {r.system_tokens}, "
             f"résumé {r.summary_tokens}/{self.context.summary_cap}, RAG {r.rag_tokens}, "
-            f"historique {r.history_tokens}/{self.context.history_budget(self.store.get_profile(self.config.user))} "
+            f"historique {r.history_tokens}/{self.context.history_budget(self.prompt_profile())} "
             f"({r.history_kept} messages gardés, {r.history_dropped} écartés)"
         )
         print(f"Mémoire de l'apprenant {r.memory_tokens}/{self.context.memory_cap}")
@@ -293,7 +431,7 @@ class Chat:
 
     def _compress(self, force: bool = False) -> bool:
         """Summarize old turns if needed; return True if something was compressed."""
-        available = self.context.history_budget(self.store.get_profile(self.config.user))
+        available = self.context.history_budget(self.prompt_profile())
         done = False
         while chunk := self.compressor.select(self.history, available, force=force and not done):
             self.notify(f"[compression de {len(chunk)} anciens messages…]")
@@ -418,23 +556,44 @@ class Chat:
         self.history.append(user_msg)
         self.store.add_message(self.session_id, user_msg)
 
-        if self.config.compression:
+        if self.switches["compression"] and self.switches["history"]:
             if self.compress_backoff:
                 self.compress_backoff -= 1
             else:
                 self._compress()
-        summary = self.summary.render() if self.summary and not self.summary.is_empty() else None
-        self.last_memory = (
-            self.learner.render(self.config.user, self.language, text, self.context.memory_cap)
-            if self.config.memory
-            else None
-        )
-        messages, self.last_report = self.context.build(
-            self.store.get_profile(self.config.user), self.history, summary, self.last_memory
-        )
+        messages, self.last_report, self.last_memory = self.build_prompt(text, self.history)
+        self.last_sources = kept_sources(self)
+        self.last_off = features.disabled(self.switches, self.feature_available())
         if self.last_report.history_dropped:
             self.notify(f"[{self.last_report.history_dropped} anciens messages hors contexte]")
         return messages
+
+    def build_prompt(self, text: str, history: list[Message]) -> tuple[list[dict], ContextReport, str | None]:
+        """The prompt for `text` (the last message of `history`), with the switches as they are now.
+
+        Reads the database and runs the retrieval, but stores nothing: compare.py
+        calls it twice for the same message."""
+        sw = self.switches
+        summary = None
+        if sw["history"] and sw["compression"] and self.summary and not self.summary.is_empty():
+            summary = self.summary.render()
+        memory = (
+            self.learner.render(self.config.user, self.language, text, self.context.memory_cap)
+            if sw["memory"]
+            else None
+        )
+        turns = history if sw["history"] else history[-1:]
+        messages, report = self.context.build(self.prompt_profile(), turns, summary, memory)
+        return messages, report, memory
+
+    def turn_meta(self) -> dict | None:
+        """Stored with an answer: what was switched off, which lesson chunks were used."""
+        meta: dict = {}
+        if self.last_off:
+            meta["off"] = self.last_off
+        if self.last_sources:
+            meta["sources"] = [{"source": s["source"], "part": s["part"]} for s in self.last_sources]
+        return meta or None
 
     def _finish(self, text: str, answer: str, stats: ChatStats, ev: dict) -> None:
         """Keep the answer, even a partial one, and start the memory extraction in the background."""
@@ -444,10 +603,10 @@ class Chat:
             output_chars=len(answer),
         )
         if answer:
-            msg = Message("assistant", answer, stats.eval_count or estimate_message(answer))
+            msg = Message("assistant", answer, stats.eval_count or estimate_message(answer), meta=self.turn_meta())
             self.history.append(msg)
             self.store.add_message(self.session_id, msg)
-            if self.config.memory:
+            if self.switches["memory"]:
                 self._start_extraction(text, answer)
 
 
