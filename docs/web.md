@@ -26,10 +26,12 @@ Fonctionne **hors ligne** : aucune police, bibliothèque ou image n'est chargée
 | Mode **Agent** | chaque étape (résumé, action, durée, résultat de la sandbox, refus de permission) ; **carte de confirmation** avec action, fichiers, diff coloré, risques, compte à rebours | A1, T2, T4, A3 |
 | Onglet **Progrès** | mots vus / maîtrisés / à réviser, boîtes de Leitner, erreurs récurrentes ; un mot faux s'oublie d'un clic | M3 |
 | Onglet **Contexte** | répartition de la fenêtre au dernier message (rôle, mémoire, résumé, leçons, historique, libre, réserve) et tokens comptés par Ollama ; leçons utilisées avec cosinus, BM25 et note de rerank ; résumé de session et bouton **Résumer maintenant** ; métriques | M2, R1, R2, EV3 |
-| Onglet **Profil** | profil de l'apprenant (ajout, suppression) ; sessions (nouvelle, reprendre) | M1 |
+| Onglet **Labo** | interrupteurs des fonctionnalités (B1, M1, M2, M3, R1, R2) et démonstrations prêtes à lancer en mode Comparer ([labo.md](labo.md)) | toutes |
+| Mode **Comparer** | même question avec et sans une fonctionnalité, deux colonnes, leçons de chaque côté, arbitrage du modèle | toutes |
+| Onglet **Profil** | apprenants (créer, choisir, supprimer) ; historique (série, activité sur 14 jours, sessions à lire ou reprendre) ; profil de l'apprenant (ajout, suppression) | M1 |
 | En-tête | changement de modèle sans redémarrer ; badge GPU / CPU (où Ollama a placé le modèle, mis à jour après chaque réponse) ; état (prêt, réfléchit, écrit, attend ta confirmation) | configuration |
 
-Sur téléphone, les onglets passent dans un panneau latéral (bouton en haut à droite) ; `#progres`, `#contexte` ou `#profil` à la fin de l'adresse ouvrent directement un onglet.
+Sur téléphone, les onglets passent dans un panneau latéral (bouton en haut à droite) ; `#progres`, `#contexte`, `#labo` ou `#profil` à la fin de l'adresse ouvrent directement un onglet.
 
 ## 3. Architecture
 
@@ -75,6 +77,7 @@ Ollama (HTTP local)
 | POST | `/api/compress` | résumer maintenant les anciens échanges |
 | GET / PUT | `/api/models`, `/api/model` | modèles installés, changer de modèle |
 | GET | `/api/metrics` | métriques du journal (EV3) |
+| … | `/api/users`, `/api/history`, `/api/features`, `/api/compare`… | apprenants, historique, interrupteurs, comparaison avec / sans : voir [labo.md](labo.md#5-api-ajoutée) |
 
 ## 4. Sécurité
 
@@ -103,7 +106,7 @@ Limite : aucune authentification. N'importe quel programme qui tourne sur la mac
 
 ## 6. Tests et mesures
 
-`tests/test_web.py` : **13 tests**, sans modèle (faux client Ollama scripté), dont 6 contre un vrai serveur uvicorn local interrogé en HTTP.
+`tests/test_web.py` : **15 tests**, sans modèle (faux client Ollama scripté), dont 8 contre un vrai serveur uvicorn local interrogé en HTTP.
 
 | Partie | Ce qui est vérifié |
 |---|---|

@@ -20,12 +20,16 @@ No LLM framework is used: every model call goes straight to Ollama's HTTP API (`
 | **R1** | **Basic RAG**: ingest lessons, chunk, embed (Ollama `/api/embed`), SQLite vector store, inject top chunks | `sensai/rag/` |
 | **R2** | **Advanced RAG**: metadata filters, hybrid search (cosine + BM25), model reranking, per-chunk relevance gates | `sensai/rag/pipeline.py`, `sensai/rag/filters.py` |
 | **X1** | **Web UI (Duolingoy)**: streamed chat, learner progress, live context usage and sources, agent mode with confirmations in the browser, model switching | `sensai/web/` |
+| **Lab** | **Learners & history**: several learner profiles, switch without restarting, streak, 14-day activity, read-only session preview | `sensai/memory/store.py`, `Chat.switch_user` |
+| **Lab** | **Feature switches**: turn history (B1), profile (M1), memory (M3), summary (M2), RAG (R1) and each R2 stage off at runtime; every answer records what was off | `sensai/features.py` |
+| **Lab** | **With / without comparison**: the same question answered with and without a feature, side by side, with each prompt's content and a model judge; RAG benchmark | `sensai/compare.py`, `benchmarks/rag_ab.py` |
 
 Detailed documentation:
 - [docs/memoire_contexte.md](docs/memoire_contexte.md): memory and context (B1, M1, M2, M3), with **user stories**;
 - [docs/rag.md](docs/rag.md): RAG pipeline, metadata, design choices, limits and **user stories** (R1, R2);
 - [docs/agent_securite_observabilite.md](docs/agent_securite_observabilite.md): agent, sandbox, permissions, confirmations and monitoring (A1, T2, T4, A3, EV3), with architecture, design choices, security limits, **user stories** and the keynote demo;
 - [docs/web.md](docs/web.md): Duolingoy, the web interface (X1): architecture, API, security, design choices and **user stories**;
+- [docs/labo.md](docs/labo.md): learners and history, feature switches, with/without comparison and its judge, the RAG benchmark, with **user stories**;
 - [docs/demo.md](docs/demo.md): the keynote scenario, one story in three acts covering every feature, with measured timings.
 
 ## Installation
@@ -56,7 +60,7 @@ In the browser, with **Duolingoy** (same options as the CLI, plus `--port`; see 
 .venv/bin/python -m sensai.web --port 8080 --user camille
 ```
 
-It shows the streamed conversation, the learner's progress (vocabulary, Leitner boxes, recurring mistakes), how the context window was filled and which lesson chunks were used, and runs agent tasks with confirmation cards. It listens on `127.0.0.1` only and works offline; the API is documented at `/api/docs`.
+It shows the streamed conversation, the learner's progress (vocabulary, Leitner boxes, recurring mistakes), how the context window was filled and which lesson chunks were used, runs agent tasks with confirmation cards, switches between learners and shows their history, and lets you cut any feature or compare answers with and without it (**Labo** tab, **Comparer** mode). It listens on `127.0.0.1` only and works offline; the API is documented at `/api/docs`.
 
 Chat commands (full list with `/help`):
 
@@ -65,6 +69,9 @@ Chat commands (full list with `/help`):
 | `/profile set langue_cible japonais` | fill in the learner profile |
 | `/vocab`, `/mistakes`, `/summary`, `/context` | learner memory and context |
 | `/agent <task>` | agent mode (A1): tools, sandbox, confirmations |
+| `/users`, `/user <name>` | list learners, switch to one (created if new; resumes its latest session) |
+| `/features`, `/feature rag off`, `/feature reset` | feature switches: cut a feature to see what it brings |
+| `/compare rag <question>` | the same question with and without a feature, side by side (nothing is stored) |
 | `/rag`, `/rag search <question>` | RAG state; per-chunk scores and rejection reasons (use it to tune thresholds) |
 | `/rag filter niveau=A1 date>=2026-09-01` | metadata filters; `/rag filter clear` removes them; `/rag index` re-syncs the index |
 | `/trace` | steps of the last agent task (public summaries, actions, results) |
@@ -116,6 +123,7 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 | `rag_sources` / `rag_embed_model` | `["docs/lecons"]` / `bge-m3` | indexed files or folders, embedding model (R1) |
 | `rag_top_k` / `rag_candidates` / `rag_share` | 4 / 8 / 0.25 | chunks injected, chunks reranked, share of the token budget (R1/R2) |
 | `rag_min_cosine` / `rag_rerank` / `rag_min_rerank` | 0.30 / true / 0.5 | relevance gates; **calibrate with `/rag search`** (R2) |
+| `rag_hybrid` | true | fuse BM25 with the cosine ranking (R2); like `memory`, `compression` and `rag_rerank`, it is only the startup value of a switch |
 | `log_path` / `log_content_chars` | `data/logs/sensai.jsonl` / 120 | event log and longest text excerpt it keeps |
 
 ## Tests
@@ -125,7 +133,7 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 SENSAI_DOCKER_TESTS=1 .venv/bin/python -m unittest tests.test_sandbox   # + Docker backend, if the daemon is running
 ```
 
-The tests use no network and no model: the ReAct loop, the compression (M2) and the memory extraction (M3) are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (M2, M3); their results are in [docs/memoire_contexte.md](docs/memoire_contexte.md#13-tests-et-mesures).
+The tests use no network and no model: the ReAct loop, the compression (M2) and the memory extraction (M3) are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (M2, M3, RAG with/without); their results are in [docs/memoire_contexte.md](docs/memoire_contexte.md#13-tests-et-mesures) and [docs/labo.md](docs/labo.md#4-mesurer-lintérêt-du-rag--benchmarksrag_abpy).
 
 ## User stories
 
@@ -133,4 +141,5 @@ At least two per feature, with acceptance criteria:
 - B1, M1, M2, M3: [docs/memoire_contexte.md](docs/memoire_contexte.md#12-user-stories);
 - R1, R2: [docs/rag.md](docs/rag.md#6-user-stories);
 - X1: [docs/web.md](docs/web.md#8-user-stories);
+- learners & history, feature switches, comparison: [docs/labo.md](docs/labo.md#9-user-stories);
 - A1, T2, T4, A3, EV3: [docs/agent_securite_observabilite.md](docs/agent_securite_observabilite.md#9-user-stories).
