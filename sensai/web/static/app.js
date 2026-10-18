@@ -204,6 +204,27 @@ const ui = {
   sessions: $("#sessions"),
   newSession: $("#new-session"),
   toasts: $("#toasts"),
+  user: $("#user"),
+  banner: $("#switch-banner"),
+  bannerText: $("#switch-banner-text"),
+  bannerReset: $("#switch-banner-reset"),
+  compareBar: $("#compare-bar"),
+  compareFeature: $("#compare-feature"),
+  compareJudge: $("#compare-judge"),
+  switches: $("#switches"),
+  switchesReset: $("#switches-reset"),
+  demos: $("#demos"),
+  users: $("#users"),
+  userForm: $("#user-form"),
+  userName: $("#user-name"),
+  historyUser: $("#history-user"),
+  historyStats: $("#history-stats"),
+  activity: $("#activity"),
+  preview: $("#preview"),
+  previewTitle: $("#preview-title"),
+  previewResume: $("#preview-resume"),
+  previewClose: $("#preview-close"),
+  previewThread: $("#preview-thread"),
 };
 
 const app = { mode: "chat", busy: false, state: null, memory: null };
@@ -218,9 +239,11 @@ function setBusy(busy, text = "") {
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   ui.stop.disabled = false;
-  for (const control of document.querySelectorAll(".mode, #model, #compress, #new-session, .session .btn, .forget")) {
+  const controls = ".mode, #model, #user, #compress, #new-session, .session .btn, .forget, #switches-reset, #switch-banner-reset, .user .btn, #user-form .btn, #compare-feature";
+  for (const control of document.querySelectorAll(controls)) {
     control.disabled = busy || (control.dataset.mode === "agent" && !app.state?.features.agent);
   }
+  if (app.state) renderSwitches(app.state.switches); // switches and demos: disabled while busy, or when unavailable
   setStatus(busy ? "busy" : "idle", busy ? text : "Prêt");
 }
 
@@ -257,20 +280,27 @@ const SUGGESTIONS = {
     "Écris un quiz Python à partir de docs/lecons/compteurs.md, teste-le, puis enregistre-le dans workspace/quiz.py",
     "Crée une fiche de révision à partir de docs/lecons/animaux.md dans workspace/fiche.md",
   ],
+  compare: [
+    "Qu'est-ce qui tombe à l'interro de vendredi ?",
+    "Comment compter trois crayons en japonais ?",
+    "Comment dit-on « chat » ?",
+  ],
+};
+
+const WELCOME = {
+  chat: ["Konnichiwa !", "Je suis ton tuteur de langues. Je retiens tes mots et tes erreurs, et je m'appuie sur tes leçons."],
+  agent: ["Que dois-je préparer ?", "Confie une tâche à l'agent : il lit tes leçons, écrit et teste ses programmes, et te demande toujours avant de modifier un fichier."],
+  compare: ["Avec ou sans ?", "Pose une question : elle est envoyée deux fois, avec puis sans la fonctionnalité choisie au-dessus du champ, et les deux réponses s'affichent côte à côte."],
 };
 
 function welcome() {
-  const agent = app.mode === "agent";
+  const [title, text] = WELCOME[app.mode];
   return h(
     "div",
     { class: "welcome" },
     h("img", { src: MASCOT, alt: "" }),
-    h("h1", { text: agent ? "Que dois-je préparer ?" : "Konnichiwa !" }),
-    h("p", {
-      text: agent
-        ? "Confie une tâche à l'agent : il lit tes leçons, écrit et teste ses programmes, et te demande toujours avant de modifier un fichier."
-        : "Je suis ton tuteur de langues. Je retiens tes mots et tes erreurs, et je m'appuie sur tes leçons.",
-    }),
+    h("h1", { text: title }),
+    h("p", { text }),
     h(
       "div",
       { class: "chips" },
@@ -313,12 +343,27 @@ function userMessage(text, summarized = false) {
   );
 }
 
-function assistantMessage(text, summarized = false) {
+const featureLabel = (id) => app.state?.switches.find((f) => f.id === id)?.label ?? id;
+const fileName = (path) => path.split("/").pop();
+
+/** Under an answer: which features were switched off, which lessons were used. */
+function msgTags(meta) {
+  if (!meta) return null;
+  const tags = [];
+  if (meta.off?.length) tags.push(h("span", { class: "tag tag-off", title: "Fonctionnalités coupées pour cette réponse", text: `✂ sans ${meta.off.map(featureLabel).join(", ")}` }));
+  if (meta.sources?.length) {
+    const files = [...new Set(meta.sources.map((s) => fileName(s.source)))];
+    tags.push(h("span", { class: "tag tag-rag", title: "Leçons injectées dans le prompt", text: `📄 ${files.join(", ")}` }));
+  }
+  return tags.length ? h("div", { class: "msg-tags" }, tags) : null;
+}
+
+function assistantMessage(text, summarized = false, meta = null) {
   return h(
     "div",
     { class: `msg msg-assistant${summarized ? " is-summarized" : ""}` },
     h("img", { class: "msg-avatar", src: MASCOT, alt: "" }),
-    h("div", { class: "bubble markdown", html: renderMarkdown(text) }),
+    h("div", { class: "msg-body" }, h("div", { class: "bubble markdown", html: renderMarkdown(text) }), msgTags(meta)),
   );
 }
 
@@ -350,7 +395,7 @@ function renderThread(state) {
       dividerShown = true;
     }
     if (message.role === "user") nodes.push(userMessage(message.content, summarized));
-    else if (message.role === "assistant") nodes.push(assistantMessage(message.content, summarized));
+    else if (message.role === "assistant") nodes.push(assistantMessage(message.content, summarized, message.meta));
   }
   ui.thread.replaceChildren(...(nodes.length ? nodes : [welcome()]));
   scrollToEnd(true);
@@ -363,7 +408,8 @@ function liveAnswer() {
   const body = h("div", { class: "markdown" });
   const meta = h("div", { class: "bubble-meta" });
   const bubble = h("div", { class: "bubble", "aria-busy": "true" }, thinking, body);
-  const node = append(h("div", { class: "msg msg-assistant" }, h("img", { class: "msg-avatar", src: MASCOT, alt: "" }), bubble));
+  const column = h("div", { class: "msg-body" }, bubble);
+  const node = append(h("div", { class: "msg msg-assistant" }, h("img", { class: "msg-avatar", src: MASCOT, alt: "" }), column));
   const started = performance.now();
   const seconds = () => ((performance.now() - started) / 1000).toFixed(1);
   const timer = setInterval(() => {
@@ -388,6 +434,10 @@ function liveAnswer() {
         body.innerHTML = renderMarkdown(text);
         scrollToEnd();
       });
+    },
+    tag(meta) {
+      const tags = msgTags(meta);
+      if (tags) column.append(tags);
     },
     finish(interrupted, outputTokens) {
       stopThinking();
@@ -547,6 +597,136 @@ function liveTask() {
   };
 }
 
+/* ---------- comparison with and without a feature ---------- */
+
+const SECTION_NAMES = { system: "rôle et profil", memory: "mémoire", summary: "résumé", rag: "leçons", history: "historique" };
+
+/** Two answers side by side, each with what its prompt contained, then the judge's scores. */
+function liveCompare(feature) {
+  const badge = h("span", { class: "badge", text: "en cours" });
+  const cols = h("div", { class: "compare-cols" });
+  const footer = h("div", { class: "compare-footer" });
+  const card = append(
+    h("div", { class: "compare-card" }, h("p", { class: "agent-title" }, `⚖ Avec et sans : ${featureLabel(feature)}`, badge, h("span", { class: "badge", text: "non enregistré" })), cols, footer),
+  );
+  const sides = {};
+  let current = null;
+  let frame = 0;
+  const paint = (side) => {
+    side.body.innerHTML = renderMarkdown(side.text);
+    scrollToEnd();
+  };
+  return {
+    side(event) {
+      const body = h("div", { class: "markdown" }, h("div", { class: "thinking" }, h("span", { class: "dots", "aria-hidden": "true" }, h("span"), h("span"), h("span")), "Le tuteur réfléchit…"));
+      const meta = h("div", { class: "compare-meta" });
+      const node = h("section", { class: "compare-col", dataset: { side: event.side } }, h("h3", { text: event.label }), body, meta);
+      cols.append(node);
+      current = sides[event.side] = { body, meta, node, text: "" };
+      scrollToEnd(true);
+    },
+    token(event) {
+      const side = sides[event.side];
+      side.text += event.text;
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        paint(side);
+      });
+    },
+    sideDone(event) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      const side = sides[event.side];
+      paint(side);
+      const ctx = event.context;
+      const parts = Object.keys(SECTION_NAMES).filter((key) => ctx[key] > 0).map((key) => `${SECTION_NAMES[key]} ${ctx[key]}`);
+      side.meta.append(
+        h("div", { text: `${ctx.used} tokens de prompt (${parts.join(" · ")}) · ${(event.duration_ms / 1000).toFixed(1)} s` }),
+        event.sources.length
+          ? h("ul", { class: "compare-sources" }, event.sources.map((src) => h("li", { dataset: { key: `${src.source}#${src.part}` }, text: `📄 ${fileName(src.source)} · partie ${src.part + 1}` })))
+          : h("div", { class: "muted", text: "aucune leçon dans le prompt" }),
+      );
+    },
+    verdict(event) {
+      const row = (label, result, best) =>
+        h(
+          "div",
+          { class: `score${best ? " is-best" : ""}` },
+          h("span", { class: "score-label", text: label }),
+          h("span", { class: "score-bar", role: "img", "aria-label": `${result.score} sur 10` }, h("i", { style: `width:${result.score * 10}%` })),
+          h("span", { class: "score-value", text: `${result.score}/10` }),
+          h("span", { class: "score-reason", text: result.reason }),
+        );
+      footer.append(
+        h(
+          "div",
+          { class: "verdict" },
+          h("h3", { text: "Arbitrage du modèle — fidélité aux informations apportées" }),
+          row(event.on_label, event.on, event.on.score > event.off.score),
+          row(event.off_label, event.off, event.off.score > event.on.score),
+          h("p", { class: "verdict-text", text: event.verdict }),
+        ),
+      );
+      scrollToEnd();
+    },
+    notice(text) {
+      footer.append(h("p", { class: "compare-notice", text }));
+    },
+    end(event) {
+      badge.textContent = "terminé";
+      badge.className = "badge badge-ok";
+      const { only_on: onlyOn, only_off: onlyOff } = event.sources_diff;
+      for (const [key, list] of [["on", onlyOn], ["off", onlyOff]]) {
+        for (const src of list) sides[key]?.node.querySelector(`[data-key="${CSS.escape(`${src.source}#${src.part}`)}"]`)?.classList.add("is-unique");
+      }
+      if (onlyOn.length || onlyOff.length) footer.prepend(h("p", { class: "compare-notice", text: "Surlignées : les leçons présentes d'un seul côté." }));
+    },
+    stopped() {
+      badge.textContent = "arrêté";
+      badge.className = "badge badge-warn";
+    },
+    fail(message) {
+      badge.textContent = "erreur";
+      badge.className = "badge badge-bad";
+      (current?.node ?? card).append(h("div", { class: "bubble-error", text: message }));
+    },
+  };
+}
+
+async function sendCompare(text) {
+  const feature = ui.compareFeature.value;
+  append(h("div", { class: "msg msg-user" }, h("div", { class: "bubble" }, h("span", { class: "msg-tag", text: "Comparaison" }), "\n", text)));
+  const card = liveCompare(feature);
+  setBusy(true, "Comparaison : première réponse…");
+  try {
+    await stream("/api/compare", { text, feature, judge: ui.compareJudge.checked }, {
+      side: (event) => {
+        card.side(event);
+        setStatus("busy", event.side === "on" ? "Comparaison : première réponse…" : "Comparaison : seconde réponse…");
+      },
+      token: (event) => card.token(event),
+      side_done: (event) => {
+        card.sideDone(event);
+        if (event.side === "off" && ui.compareJudge.checked) setStatus("busy", "Arbitrage…");
+      },
+      verdict: (event) => card.verdict(event),
+      notice: (event) => card.notice(event.text),
+      end: (event) => card.end(event),
+      stopped: () => card.stopped(),
+      error: (event) => {
+        card.fail(event.message);
+        toast(event.message, "error");
+      },
+    });
+  } catch (err) {
+    card.fail(err.message);
+    toast(err.message, "error");
+  } finally {
+    setBusy(false);
+    refreshMetrics().catch(() => {});
+  }
+}
+
 /* ---------- sending ---------- */
 
 async function sendChat(text) {
@@ -562,6 +742,7 @@ async function sendChat(text) {
       },
       done: (event) => {
         answer.finish(event.interrupted, event.ollama?.output_tokens);
+        answer.tag({ off: event.off, sources: event.sources });
         renderTurn(event);
         if (event.placement) renderDevice(event.placement);
         setStatus("busy", "Mise à jour de la mémoire…");
@@ -730,24 +911,244 @@ function renderProfile(state) {
   );
 }
 
-function renderSessions(sessions) {
-  ui.sessions.replaceChildren(
-    ...sessions.map((s) =>
+/* ---------- lab: feature switches (features.py) ---------- */
+
+const DEMOS = [
+  ["rag", "Qu'est-ce qui tombe à l'interro de vendredi ?", "Seule la leçon de la classe connaît la date, le barème et la liste de mots : sans RAG, le tuteur invente ou botte en touche."],
+  ["history", "Où est-ce que je pars en voyage ?", "Dis d'abord au tuteur où tu pars (en mode Tuteur). Sans historique, il ne voit que la question."],
+  ["profile", "Donne-moi un petit exercice adapté à mon niveau.", "Sans profil, le tuteur ignore ta langue cible et ton niveau."],
+  ["memory", "Fais-moi réviser mes mots.", "Sans mémoire, l'exercice ne reprend pas tes mots à réviser ni tes erreurs."],
+  ["rag_filters", "Comment dit-on « chat » ?", "Sans le filtre de langue, la leçon de coréen (고양이) peut entrer dans le prompt d'un apprenant de japonais."],
+  ["rag_rerank", "Comment compter trois crayons ?", "Sans reclassement, des passages du même thème mais inutiles occupent le prompt."],
+  ["rag_hybrid", "Que veut dire kippu ?", "Le mot rare « kippu » est trouvé par BM25 ; le cosinus seul le classe parfois moins bien."],
+];
+
+const activeSwitches = () => (app.state?.switches ?? []).filter((f) => f.available);
+const cutSwitches = () => activeSwitches().filter((f) => !f.enabled && !(f.requires && !activeSwitches().find((p) => p.id === f.requires)?.enabled));
+
+function switchRow(feature) {
+  const parent = feature.requires ? app.state.switches.find((f) => f.id === feature.requires) : null;
+  const inactive = !feature.available || (parent && !parent.enabled);
+  const input = h("input", {
+    type: "checkbox",
+    role: "switch",
+    checked: feature.enabled,
+    disabled: !feature.available || app.busy,
+    "aria-describedby": `switch-${feature.id}-does`,
+    onchange: () => toggleFeature(feature.id, input.checked, input),
+  });
+  return h(
+    "li",
+    { class: `switch${feature.enabled ? "" : " is-off"}${inactive ? " is-inactive" : ""}${parent ? " is-child" : ""}` },
+    h(
+      "label",
+      { class: "switch-head" },
+      input,
+      h("span", { class: "switch-track", "aria-hidden": "true" }),
+      h("span", { class: "switch-label", text: feature.label }),
+      h("span", { class: "badge", text: feature.code }),
+    ),
+    h("p", { class: "switch-does", id: `switch-${feature.id}-does`, text: !feature.available ? "Indisponible : RAG désactivé au démarrage." : feature.enabled ? feature.does : `Coupé — ${feature.when_off}` }),
+  );
+}
+
+function renderSwitches(list) {
+  app.state.switches = list;
+  const groups = [...new Set(list.map((f) => f.group))];
+  ui.switches.replaceChildren(
+    ...groups.map((group) => h("div", { class: "switch-group" }, h("h3", { text: group }), h("ul", { class: "switch-list" }, list.filter((f) => f.group === group).map(switchRow)))),
+  );
+  const cut = cutSwitches();
+  ui.banner.hidden = !cut.length;
+  ui.bannerText.textContent = `✂ Coupé : ${cut.map((f) => f.label).join(", ")}`;
+  const selected = ui.compareFeature.value;
+  ui.compareFeature.replaceChildren(...activeSwitches().map((f) => h("option", { value: f.id, text: `${f.label} (${f.code})`, selected: f.id === selected })));
+  ui.demos.replaceChildren(
+    ...DEMOS.filter(([id]) => activeSwitches().some((f) => f.id === id)).map(([id, question, why]) =>
       h(
         "li",
-        { class: `session${s.current ? " is-current" : ""}` },
-        h(
-          "div",
-          { class: "session-text" },
-          h("div", { class: "session-title", text: s.title || "(vide)" }),
-          h("div", { class: "session-meta", text: `#${s.id} · ${formatDate(s.updated_at)} · ${plural(s.messages, "message", "messages")}` }),
-        ),
-        s.current
-          ? h("span", { class: "badge badge-ok", text: "active" })
-          : h("button", { type: "button", class: "btn btn-secondary btn-small", text: "Reprendre", onclick: () => loadSession(s.id) }),
+        { class: "demo" },
+        h("div", { class: "demo-head" }, h("span", { class: "badge", text: featureLabel(id) }), h("button", { type: "button", class: "btn btn-secondary btn-small", text: "Essayer", disabled: app.busy, onclick: () => tryDemo(id, question) })),
+        h("div", { class: "demo-question", text: `« ${question} »` }),
+        h("div", { class: "demo-why", text: why }),
       ),
     ),
   );
+}
+
+async function toggleFeature(id, enabled, input) {
+  try {
+    const { features } = await api(`/api/features/${encodeURIComponent(id)}`, { method: "PUT", body: { enabled } });
+    renderSwitches(features);
+    toast(`${featureLabel(id)} : ${enabled ? "rétabli" : "coupé"}`);
+  } catch (err) {
+    input.checked = !enabled;
+    toast(err.message, "error");
+  }
+}
+
+async function resetSwitches() {
+  try {
+    renderSwitches((await api("/api/features/reset", { method: "POST" })).features);
+    toast("Réglages de config.json rétablis");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function tryDemo(id, question) {
+  setMode("compare");
+  ui.compareFeature.value = id;
+  ui.input.value = question;
+  autosize();
+  if (matchMedia("(max-width: 960px)").matches) openSidebar(false);
+  ui.input.focus();
+}
+
+/* ---------- learners and their history (M1) ---------- */
+
+function renderUsers(users) {
+  ui.user.replaceChildren(
+    ...users.map((u) => h("option", { value: u.name, text: u.name, selected: u.current })),
+    h("option", { value: "", text: "＋ Nouvel apprenant…" }),
+  );
+  ui.users.replaceChildren(
+    ...users.map((u) =>
+      h(
+        "li",
+        { class: `user${u.current ? " is-current" : ""}` },
+        h(
+          "div",
+          { class: "session-text" },
+          h("div", { class: "session-title", text: u.name }),
+          h("div", {
+            class: "session-meta",
+            text: [u.language || "langue non précisée", plural(u.words, "mot", "mots"), plural(u.sessions, "session", "sessions"), u.last_active ? `vu le ${formatDate(u.last_active)}` : "jamais vu"].join(" · "),
+          }),
+        ),
+        u.current
+          ? h("span", { class: "badge badge-ok", text: "actif" })
+          : [
+              h("button", { type: "button", class: "btn btn-secondary btn-small", text: "Choisir", onclick: () => selectUser(u.name) }),
+              h("button", { type: "button", class: "forget", title: `Supprimer « ${u.name} »`, "aria-label": `Supprimer ${u.name}`, text: "×", onclick: () => deleteUser(u.name) }),
+            ],
+      ),
+    ),
+  );
+}
+
+async function refreshUsers() {
+  renderUsers((await api("/api/users")).users);
+}
+
+/** After a learner change: everything on screen belongs to the new learner. */
+async function showLearner(state, message) {
+  applyState(state);
+  await Promise.all([refreshUsers(), refreshMemory(), refreshHistory()]);
+  ui.legend.replaceChildren(h("li", { class: "empty", text: "Envoie un message pour voir la répartition." }));
+  ui.gauge.replaceChildren();
+  ui.sources.replaceChildren(h("li", { class: "empty", text: "Les extraits de leçons utilisés apparaîtront ici." }));
+  toast(message);
+}
+
+async function selectUser(name) {
+  try {
+    await showLearner(await api(`/api/users/${encodeURIComponent(name)}/select`, { method: "POST" }), `Bon retour, ${name} !`);
+  } catch (err) {
+    toast(err.message, "error");
+    refreshUsers().catch(() => {});
+  }
+}
+
+async function createUser(name) {
+  try {
+    await showLearner(await api("/api/users", { method: "POST", body: { name } }), `Profil « ${name} » créé : renseigne sa langue cible.`);
+    selectTab($("#tab-profile"));
+    return true;
+  } catch (err) {
+    toast(err.message, "error");
+    refreshUsers().catch(() => {});
+    return false;
+  }
+}
+
+async function deleteUser(name) {
+  if (!window.confirm(`Supprimer « ${name} » ? Ses sessions, son profil, son vocabulaire et ses erreurs seront effacés.`)) return;
+  try {
+    renderUsers((await api(`/api/users/${encodeURIComponent(name)}`, { method: "DELETE" })).users);
+    toast(`« ${name} » supprimé`);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+const DAY_NAMES = ["D", "L", "M", "M", "J", "V", "S"];
+
+function renderActivity(days) {
+  const max = Math.max(1, ...days.map((d) => d.messages));
+  ui.activity.replaceChildren(
+    ...days.map((d) => {
+      const date = new Date(`${d.day}T12:00:00`);
+      const label = `${date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} : ${plural(d.messages, "message", "messages")}`;
+      return h(
+        "div",
+        { class: "activity-day", role: "listitem", "aria-label": label, title: label, tabindex: "0" },
+        h("span", { class: "activity-bar" }, h("i", { class: d.messages ? null : "is-zero", style: `height:${d.messages ? Math.max(6, (100 * d.messages) / max) : 0}%` })),
+        h("span", { class: "activity-label", text: DAY_NAMES[date.getDay()] }),
+      );
+    }),
+  );
+}
+
+function renderHistory(history) {
+  ui.historyUser.textContent = `· ${history.user}`;
+  ui.historyStats.replaceChildren(
+    stat(`🔥 ${history.streak}`, history.streak > 1 ? "jours d'affilée" : "jour d'affilée", "due"),
+    stat(history.active_days, "jours actifs"),
+    stat(history.messages, "messages envoyés"),
+    stat(history.mastered, `mots maîtrisés / ${history.words}`, "mastered"),
+  );
+  renderActivity(history.days);
+  ui.sessions.replaceChildren(
+    ...(history.sessions.length
+      ? history.sessions.map((s) =>
+          h(
+            "li",
+            { class: `session${s.current ? " is-current" : ""}` },
+            h(
+              "div",
+              { class: "session-text" },
+              h("div", { class: "session-title", text: s.title || "(vide)" }),
+              h("div", { class: "session-meta", text: `#${s.id} · ${formatDate(s.updated_at)} · ${plural(s.messages, "message", "messages")}` }),
+            ),
+            s.messages ? h("button", { type: "button", class: "btn btn-secondary btn-small", text: "Lire", onclick: () => openPreview(s) }) : null,
+            s.current
+              ? h("span", { class: "badge badge-ok", text: "active" })
+              : h("button", { type: "button", class: "btn btn-secondary btn-small", text: "Reprendre", onclick: () => loadSession(s.id) }),
+          ),
+        )
+      : [h("li", { class: "empty", text: "Aucune session pour l'instant." })]),
+  );
+}
+
+async function refreshHistory() {
+  renderHistory(await api("/api/history"));
+}
+
+async function openPreview(session) {
+  try {
+    const { messages } = await api(`/api/sessions/${session.id}`);
+    ui.previewTitle.textContent = `#${session.id} · ${session.title || "(vide)"} · ${formatDate(session.updated_at)}`;
+    ui.previewThread.replaceChildren(...messages.map((m) => (m.role === "user" ? userMessage(m.content) : assistantMessage(m.content, false, m.meta))));
+    ui.previewResume.hidden = session.current;
+    ui.previewResume.onclick = () => {
+      ui.preview.close();
+      loadSession(session.id);
+    };
+    ui.preview.showModal();
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 async function refreshMetrics() {
@@ -771,6 +1172,7 @@ function applyState(state) {
   renderThread(state);
   renderProfile(state);
   renderSummary(state);
+  renderSwitches(state.switches);
   if (state.last_turn) renderTurn(state.last_turn);
   const agentTab = document.querySelector('.mode[data-mode="agent"]');
   agentTab.disabled = !state.features.agent;
@@ -780,11 +1182,13 @@ function applyState(state) {
 
 async function refreshAfterTurn() {
   try {
-    const [state, sessions] = await Promise.all([api("/api/state"), api("/api/sessions")]);
+    const [state, history, users] = await Promise.all([api("/api/state"), api("/api/history"), api("/api/users")]);
     app.state = state;
     renderProfile(state);
     renderSummary(state);
-    renderSessions(sessions.sessions);
+    renderSwitches(state.switches);
+    renderHistory(history);
+    renderUsers(users.users);
     await refreshMetrics();
   } catch (err) {
     toast(err.message, "error");
@@ -821,7 +1225,7 @@ async function deleteProfileKey(key) {
 async function loadSession(id) {
   try {
     applyState(await api(`/api/sessions/${id}/load`, { method: "POST" }));
-    renderSessions((await api("/api/sessions")).sessions);
+    await refreshHistory();
     toast(`Session #${id} reprise`);
   } catch (err) {
     toast(err.message, "error");
@@ -835,7 +1239,8 @@ function setMode(mode) {
     button.classList.toggle("is-active", on);
     button.setAttribute("aria-checked", String(on));
   }
-  ui.input.placeholder = mode === "agent" ? "Décris une tâche pour l'agent…" : "Écris à ton tuteur…";
+  ui.input.placeholder = { chat: "Écris à ton tuteur…", agent: "Décris une tâche pour l'agent…", compare: "Une question, posée avec et sans…" }[mode];
+  ui.compareBar.hidden = mode !== "compare";
   if (ui.thread.querySelector(".welcome")) ui.thread.replaceChildren(welcome());
   ui.input.focus();
 }
@@ -878,7 +1283,7 @@ function bind() {
     if (!text || app.busy) return;
     ui.input.value = "";
     autosize();
-    await (app.mode === "agent" ? runAgent(text) : sendChat(text));
+    await { chat: sendChat, agent: runAgent, compare: sendCompare }[app.mode](text);
     ui.input.focus();
   });
   ui.input.addEventListener("input", autosize);
@@ -919,7 +1324,7 @@ function bind() {
     ui.toggle.focus();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && ui.sidebar.classList.contains("is-open")) {
+    if (event.key === "Escape" && !ui.preview.open && ui.sidebar.classList.contains("is-open")) {
       openSidebar(false);
       ui.toggle.focus();
     }
@@ -961,11 +1366,28 @@ function bind() {
     try {
       const state = await api("/api/sessions", { method: "POST" });
       applyState(state);
-      renderSessions((await api("/api/sessions")).sessions);
+      await refreshHistory();
       toast(`Nouvelle session #${state.session}`);
     } catch (err) {
       toast(err.message, "error");
     }
+  });
+
+  ui.user.addEventListener("change", async () => {
+    const name = ui.user.value;
+    if (name) return selectUser(name);
+    const fresh = window.prompt("Nom du nouvel apprenant (lettres, chiffres, - ou _) :")?.trim();
+    if (!fresh || !(await createUser(fresh))) refreshUsers().catch(() => {});
+  });
+  ui.userForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (await createUser(ui.userName.value.trim())) ui.userForm.reset();
+  });
+  ui.switchesReset.addEventListener("click", resetSwitches);
+  ui.bannerReset.addEventListener("click", resetSwitches);
+  ui.previewClose.addEventListener("click", () => ui.preview.close());
+  ui.preview.addEventListener("click", (event) => {
+    if (event.target === ui.preview) ui.preview.close(); // click on the backdrop
   });
 
   ui.profileForm.addEventListener("submit", async (event) => {
@@ -989,11 +1411,12 @@ async function init() {
   ui.sources.replaceChildren(h("li", { class: "empty", text: "Les extraits de leçons utilisés apparaîtront ici." }));
   ui.metrics.replaceChildren(h("dt", { text: "Aucun appel au modèle pour l'instant." }));
   try {
-    const [state, memory, sessions] = await Promise.all([api("/api/state"), api("/api/memory"), api("/api/sessions")]);
+    const [state, memory, history, users] = await Promise.all([api("/api/state"), api("/api/memory"), api("/api/history"), api("/api/users")]);
     applyState(state);
     renderDevice(state.placement);
     renderMemory(memory);
-    renderSessions(sessions.sessions);
+    renderHistory(history);
+    renderUsers(users.users);
     setStatus("idle", "Prêt");
   } catch (err) {
     setStatus("error", "Serveur injoignable");
@@ -1002,7 +1425,7 @@ async function init() {
   }
   loadModels();
   refreshMetrics().catch(() => {});
-  const tab = { "#progres": "#tab-progress", "#contexte": "#tab-context", "#profil": "#tab-profile" }[location.hash];
+  const tab = { "#progres": "#tab-progress", "#contexte": "#tab-context", "#labo": "#tab-lab", "#profil": "#tab-profile" }[location.hash];
   if (tab) {
     selectTab($(tab));
     if (matchMedia("(max-width: 960px)").matches) openSidebar(true);

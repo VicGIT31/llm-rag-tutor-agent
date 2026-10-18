@@ -19,9 +19,15 @@
     <div class="modes" role="radiogroup" aria-label="Mode">
       <button type="button" class="mode is-active" role="radio" aria-checked="true" data-mode="chat">Tuteur</button>
       <button type="button" class="mode" role="radio" aria-checked="false" data-mode="agent">Agent</button>
+      <button type="button" class="mode" role="radio" aria-checked="false" data-mode="compare" title="Même question avec et sans une fonctionnalité">Comparer</button>
     </div>
 
     <div class="topbar-end">
+      <label class="user-picker">
+        <span class="user-icon" aria-hidden="true">👤</span>
+        <span class="sr-only">Apprenant</span>
+        <select id="user" title="Apprenant"></select>
+      </label>
       <label class="model-picker">
         <span class="sr-only">Modèle</span>
         <select id="model" title="Modèle Ollama"></select>
@@ -43,6 +49,17 @@
       <section class="thread" id="thread" aria-label="Conversation"></section>
 
       <form class="composer" id="composer">
+        <div class="switch-banner" id="switch-banner" hidden>
+          <span id="switch-banner-text"></span>
+          <button type="button" class="link-btn" id="switch-banner-reset">Tout rétablir</button>
+        </div>
+        <div class="compare-bar" id="compare-bar" hidden>
+          <label>Avec et sans
+            <select id="compare-feature"></select>
+          </label>
+          <label class="check"><input type="checkbox" id="compare-judge" checked> arbitrage par le modèle</label>
+          <span class="compare-note">rien n'est enregistré</span>
+        </div>
         <div class="composer-box">
           <textarea id="input" rows="1" maxlength="4000" placeholder="Écris à ton tuteur…" aria-label="Message"></textarea>
           <button class="btn btn-primary" id="send" type="submit">Envoyer</button>
@@ -61,6 +78,7 @@
       <div class="tabs" role="tablist" aria-label="Panneaux">
         <button type="button" role="tab" id="tab-progress" aria-controls="panel-progress" aria-selected="true">Progrès</button>
         <button type="button" role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1">Contexte</button>
+        <button type="button" role="tab" id="tab-lab" aria-controls="panel-lab" aria-selected="false" tabindex="-1">Labo</button>
         <button type="button" role="tab" id="tab-profile" aria-controls="panel-profile" aria-selected="false" tabindex="-1">Profil</button>
       </div>
 
@@ -91,8 +109,35 @@
         <dl class="metrics" id="metrics"></dl>
       </section>
 
+      <section class="panel" role="tabpanel" id="panel-lab" aria-labelledby="tab-lab" hidden>
+        <h2>Fonctionnalités</h2>
+        <p class="hint">Coupe une fonctionnalité pour voir ce qu'elle apporte : le message suivant est construit sans elle, et la jauge de l'onglet Contexte montre la place libérée. Chaque réponse garde la trace de ce qui était coupé.</p>
+        <div id="switches"></div>
+        <button type="button" class="btn btn-secondary" id="switches-reset">Rétablir config.json</button>
+
+        <h2>Comparer avec et sans</h2>
+        <p class="hint">Le mode <strong>Comparer</strong> pose la même question deux fois, avec puis sans la fonctionnalité choisie, et affiche les deux réponses côte à côte avec ce que chaque prompt contenait. Le modèle peut ensuite noter la fidélité de chaque réponse aux informations que la fonctionnalité apportait. Rien n'est enregistré.</p>
+        <ul class="demo-list" id="demos"></ul>
+      </section>
+
       <section class="panel" role="tabpanel" id="panel-profile" aria-labelledby="tab-profile" hidden>
-        <h2>Apprenant <span class="count" id="learner"></span></h2>
+        <h2>Apprenants</h2>
+        <ul class="users" id="users"></ul>
+        <form class="user-form" id="user-form">
+          <input id="user-name" maxlength="40" placeholder="nouvel apprenant" aria-label="Nom du nouvel apprenant" required pattern="[\w\-]+" title="lettres, chiffres, - ou _">
+          <button class="btn btn-secondary" type="submit">Créer</button>
+        </form>
+
+        <h2>Historique <span class="count" id="history-user"></span></h2>
+        <div class="stats" id="history-stats"></div>
+        <figure class="activity">
+          <figcaption>Messages envoyés, 14 derniers jours</figcaption>
+          <div class="activity-bars" id="activity" role="list"></div>
+        </figure>
+        <button type="button" class="btn btn-secondary" id="new-session">Nouvelle session</button>
+        <ul class="sessions" id="sessions"></ul>
+
+        <h2>Profil <span class="count" id="learner"></span></h2>
         <dl class="profile" id="profile"></dl>
         <form class="profile-form" id="profile-form">
           <input id="profile-key" list="profile-keys" maxlength="40" placeholder="clé" aria-label="Clé" required pattern="[\w\- ]+">
@@ -105,13 +150,20 @@
           <input id="profile-value" maxlength="200" placeholder="valeur" aria-label="Valeur" required>
           <button class="btn btn-secondary" type="submit">Ajouter</button>
         </form>
-
-        <h2>Sessions</h2>
-        <button type="button" class="btn btn-secondary" id="new-session">Nouvelle session</button>
-        <ul class="sessions" id="sessions"></ul>
       </section>
     </aside>
   </div>
+
+  <dialog class="preview" id="preview" aria-labelledby="preview-title">
+    <div class="preview-head">
+      <h2 id="preview-title">Session</h2>
+      <button type="button" class="btn btn-primary btn-small" id="preview-resume">Reprendre</button>
+      <button type="button" class="icon-btn" id="preview-close" aria-label="Fermer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="preview-thread" id="preview-thread"></div>
+  </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
