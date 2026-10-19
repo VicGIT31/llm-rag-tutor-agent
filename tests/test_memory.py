@@ -17,7 +17,7 @@ from sensai.config import Config
 from sensai.context import ContextBuilder
 from sensai.memory.compressor import CompressionError, Compressor, Summary, compress
 from sensai.memory.extractor import ExtractionError, MemoryExtractor
-from sensai.memory.learner import DAY, LEITNER_DAYS, MAX_OPS_PER_TURN, LearnerMemory, Mistake, Word
+from sensai.memory.learner import DAY, LEITNER_DAYS, MAX_OPS_PER_TURN, LearnerMemory, Mistake, Word, looks_like
 from sensai.memory.store import MemoryStore, Message
 from sensai.memory.tokens import MESSAGE_OVERHEAD, estimate_message, estimate_tokens
 from sensai.observability import EventLogger
@@ -469,9 +469,39 @@ class LearnerMemoryTest(TmpDirTestCase):
         self.assertEqual(report.applied, ["review_word"])  # a short expression is fine
         self.assertEqual(len(report.rejected), 2)
 
+    def test_apply_rejects_french_words_taken_for_vocabulary(self):
+        # What two real sessions produced after answers about the trip to Kyoto, all in French.
+        report = self.apply(
+            {"op": "add_word", "word": "voyage", "translation": "voyage"},
+            {"op": "add_word", "word": "Kyoto", "translation": "kyoto"},
+            {"op": "add_word", "word": "élève", "translation": "student"},
+            {"op": "add_word", "word": "vol", "translation": "transport aérien"},
+            {"op": "add_word", "word": "avril", "translation": "mois"},
+            {"op": "add_word", "word": "Camille", "translation": "prénom"},
+            {"op": "review_word", "word": "acompte", "correct": True, "translation": "Acompte"},
+            # real vocabulary still goes through: rōmaji, loanwords, macrons, kana, small tsu
+            {"op": "add_word", "word": "hoteru", "translation": "hôtel"},
+            {"op": "add_word", "word": "ippon", "translation": "un objet long"},
+            {"op": "add_word", "word": "ねこ", "translation": "chat"},
+            {"op": "add_word", "word": "kōhī", "translation": "café"},
+            {"op": "add_word", "word": "kin'youbi", "translation": "vendredi"},
+        )
+        self.assertEqual(report.applied, ["add_word"] * 5)
+        self.assertEqual(len(report.rejected), 7)
+        self.assertTrue(any("traduit par lui-même" in r for r in report.rejected))
+        self.assertTrue(any("ne s'écrit pas en japonais" in r for r in report.rejected))
+
+    def test_word_shape_per_language(self):
+        self.assertTrue(all(looks_like("japonais", w) for w in ("sanbon", "matcha", "shichi-ji", "irasshaimase", "日本語")))
+        self.assertFalse(any(looks_like("japonais", w) for w in ("transports", "assurance", "visites", "repas")))
+        self.assertTrue(looks_like("coréen", "annyeonghaseyo") and looks_like("coréen", "고양이"))
+        self.assertFalse(looks_like("coréen", "vol"))
+        # other languages are not checked: French accents in Spanish, pinyin with x and « à »
+        self.assertTrue(looks_like("espagnol", "canción") and looks_like("chinois", "xièxie"))
+
     def test_apply_caps_operations_per_turn(self):
         ops = [{"op": "add_word", "word": f"mot{i}", "translation": "t"} for i in range(MAX_OPS_PER_TURN + 3)]
-        report = self.apply(*ops)
+        report = self.apply(*ops, lang="espagnol")  # a language whose words are not shape-checked
         self.assertEqual(len(report.applied), MAX_OPS_PER_TURN)
         self.assertEqual(len(report.rejected), 3)
 
