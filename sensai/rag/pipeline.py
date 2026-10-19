@@ -104,7 +104,9 @@ class Rag:
         self.client = client
         self.logger = logger or NullLogger()
         self.profile_fn = profile_fn
-        self.embedder = embedder or OllamaEmbedder(config.host, config.rag_embed_model, gpu=config.rag_embed_gpu)
+        self.embedder = embedder or OllamaEmbedder(
+            config.host, config.rag_embed_model, gpu=config.rag_embed_gpu, keep_alive=config.keep_alive
+        )
         self.store = store or RagStore(config.rag_db_path)
         self.filters: list[Filter] = []  # explicit, set with /rag filter
         # R2 stages, switchable at runtime to show what each one brings (features.py)

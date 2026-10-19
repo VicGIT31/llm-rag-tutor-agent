@@ -686,7 +686,7 @@ def load_model(client: OllamaClient) -> Placement | None:
 
 def run(config: Config) -> int:
     logger = EventLogger(config.log_path, config.log_content_chars, config.log_max_bytes)
-    client = OllamaClient(config.host, config.model, config.num_ctx, config.think, logger=logger)
+    client = OllamaClient(config.host, config.model, config.num_ctx, config.think, logger=logger, keep_alive=config.keep_alive)
     try:
         client.check()
     except OllamaError as exc:

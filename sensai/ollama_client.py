@@ -63,12 +63,17 @@ class OllamaClient:
         think: bool | None = None,
         timeout: float = 300,
         logger: EventLogger | None = None,
+        keep_alive: str | int | None = None,
     ):
+        """keep_alive: how long Ollama keeps the model loaded after a request ("30m", seconds, -1 = forever).
+        Ollama's default is 5 minutes: a learner who thinks longer than that, or a keynote that talks
+        between two demos, pays a full reload (15 to 45 s) on the next message."""
         self.host = host.rstrip("/")
         self.model = model
         self.num_ctx = num_ctx
         self.think = think
         self.timeout = timeout
+        self.keep_alive = keep_alive
         self.logger = logger or NullLogger()
 
     def _log_call(
@@ -142,6 +147,8 @@ class OllamaClient:
         }
         if self.think is not None:
             payload["think"] = self.think
+        if self.keep_alive is not None:
+            payload["keep_alive"] = self.keep_alive
         return payload
 
     def chat(

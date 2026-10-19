@@ -15,7 +15,10 @@ def normalize(vec: list[float]) -> array:
 
 
 class OllamaEmbedder:
-    def __init__(self, host: str, model: str, timeout: float = 120, batch_size: int = 16, gpu: bool = False):
+    def __init__(
+        self, host: str, model: str, timeout: float = 120, batch_size: int = 16, gpu: bool = False,
+        keep_alive: str | int | None = None,
+    ):
         """gpu=False keeps the embedding model on the CPU. It is small and fast there, and
         on a GPU that the chat model already fills, Ollama would unload one model to load
         the other at every message."""
@@ -24,6 +27,7 @@ class OllamaEmbedder:
         self.timeout = timeout
         self.batch_size = batch_size
         self.gpu = gpu
+        self.keep_alive = keep_alive  # same as the chat model: no reload in the middle of a session
 
     def check(self) -> int:
         """Fail early if the embedding model is missing; returns the vector size."""
@@ -40,6 +44,8 @@ class OllamaEmbedder:
             payload: dict = {"model": self.model, "input": batch}
             if not self.gpu:
                 payload["options"] = {"num_gpu": 0}  # no layer on the GPU
+            if self.keep_alive is not None:
+                payload["keep_alive"] = self.keep_alive
             resp = requests.post(f"{self.host}/api/embed", json=payload, timeout=self.timeout)
         except requests.RequestException as exc:
             raise OllamaUnavailable(f"connection to Ollama failed: {exc}") from exc

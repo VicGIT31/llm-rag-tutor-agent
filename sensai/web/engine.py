@@ -116,7 +116,9 @@ class Engine:
         config = self.config
         logger = logger or EventLogger(config.log_path, config.log_content_chars, config.log_max_bytes)
         if client is None:
-            client = OllamaClient(config.host, config.model, config.num_ctx, config.think, logger=logger)
+            client = OllamaClient(
+                config.host, config.model, config.num_ctx, config.think, logger=logger, keep_alive=config.keep_alive
+            )
             client.check()
             self.placement = load_model(client)
         store = MemoryStore(config.db_path)

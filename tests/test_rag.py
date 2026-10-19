@@ -372,6 +372,23 @@ class EmbedderRequestTest(unittest.TestCase):
         body, _ = self.embed(OllamaEmbedder("http://x", "bge-m3", gpu=True))
         self.assertNotIn("options", body)
 
+    def test_keep_alive_is_sent_when_configured(self):
+        body, _ = self.embed(OllamaEmbedder("http://x", "bge-m3", keep_alive="30m"))
+        self.assertEqual(body["keep_alive"], "30m")
+        body, _ = self.embed(OllamaEmbedder("http://x", "bge-m3"))
+        self.assertNotIn("keep_alive", body)  # Ollama's own default
+
+
+class ChatPayloadTest(unittest.TestCase):
+    def test_keep_alive_and_num_ctx_in_every_chat_request(self):
+        from sensai.ollama_client import OllamaClient
+        payload = OllamaClient("http://x", "m", 8192, False, keep_alive="30m")._payload([], stream=True)
+        self.assertEqual((payload["keep_alive"], payload["options"]["num_ctx"]), ("30m", 8192))
+        self.assertNotIn("keep_alive", OllamaClient("http://x", "m", 8192)._payload([], stream=True))
+
+    def test_config_default_keeps_models_loaded_for_a_session(self):
+        self.assertEqual(Config().keep_alive, "30m")
+
 
 if __name__ == "__main__":
     unittest.main()

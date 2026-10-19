@@ -15,6 +15,7 @@ class Config:
     num_ctx: int = 8192
     response_reserve: float = 0.2
     think: bool | None = False
+    keep_alive: str | int | None = "30m"  # how long Ollama keeps the models loaded (its default: 5 min)
     db_path: str = "data/sensai.db"
     user: str = "default"
     system_prompt: str = "You are Sensai, a friendly language tutor."
