@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated at runtime: learner database, RAG index (a cache of docs/lecons), event log
+data/
+
+# Files written by the agent (A1/T4)
+workspace/
+
