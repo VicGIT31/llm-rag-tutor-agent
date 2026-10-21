@@ -32,28 +32,43 @@ from .store import RagStore, StoredChunk
 RRF_K = 60  # standard reciprocal-rank-fusion constant
 RERANK_CHARS = 500  # characters of each candidate shown to the reranker
 
-RERANK_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "scores": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {"id": {"type": "integer"}, "score": {"type": "integer"}},
-                "required": ["id", "score"],
-            },
-        }
-    },
-    "required": ["scores"],
-}
+
+def rerank_schema(n: int) -> dict:
+    """Exactly one integer score per passage, in passage order.
+
+    A bare list of integers costs about 2 output tokens per passage, against 12 for
+    {"id": 0, "score": 7}: the model writes five times less before the answer can start."""
+    return {
+        "type": "object",
+        "properties": {
+            "scores": {"type": "array", "items": {"type": "integer"}, "minItems": n, "maxItems": n},
+        },
+        "required": ["scores"],
+    }
+
 
 RERANK_SYSTEM = (
     "Tu évalues la pertinence de passages de cours pour répondre à un message d'apprenant. "
     "Pour chaque passage, donne une note entière de 0 (sans rapport) à 10 (contient directement "
     "ce qu'il faut pour répondre). Un passage qui parle du même thème sans aider à répondre vaut "
-    "au plus 3. Réponds uniquement en JSON : {\"scores\": [{\"id\": 0, \"score\": 7}, ...]} avec un "
-    "élément par passage."
+    "au plus 3. Réponds uniquement en JSON : {\"scores\": [7, 0, 10, ...]}, une note par passage, "
+    "dans l'ordre des passages."
 )
+
+
+def parse_scores(raw: str, n: int) -> list[float]:
+    """The n scores of a rerank reply; raises ValueError (or KeyError/TypeError) if unusable.
+
+    Accepts the compact form [7, 0, 10] and the older [{"id": 0, "score": 7}, ...]."""
+    items = json.loads(raw)["scores"]
+    if items and all(isinstance(i, dict) for i in items):
+        by_id = {int(i["id"]): float(i["score"]) for i in items}
+        if set(by_id) != set(range(n)):
+            raise ValueError("incomplete scores")
+        return [by_id[i] for i in range(n)]
+    if len(items) != n or not all(isinstance(i, (int, float)) and not isinstance(i, bool) for i in items):
+        raise ValueError("incomplete scores")
+    return [float(i) for i in items]
 
 
 @dataclass
@@ -271,14 +286,12 @@ class Rag:
             raw = self.client.chat(
                 messages,
                 ChatStats(),
-                schema=RERANK_SCHEMA,
+                schema=rerank_schema(len(hits)),
                 options={"temperature": 0},
                 purpose="rerank",
                 interaction_id=interaction_id,
             )
-            scores = {int(s["id"]): float(s["score"]) for s in json.loads(raw)["scores"]}
-            if set(scores) != set(range(len(hits))):
-                raise ValueError("incomplete scores")
+            scores = parse_scores(raw, len(hits))
         except (OllamaError, ValueError, KeyError, TypeError):
             return "failed"
         for i, h in enumerate(hits):

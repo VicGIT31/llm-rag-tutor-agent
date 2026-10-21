@@ -25,7 +25,7 @@
   "rag_chunk_chars": 700,
   "rag_auto_index": true,
   "rag_top_k": 4,
-  "rag_candidates": 8,
+  "rag_candidates": 4,
   "rag_hybrid": true,
   "rag_min_cosine": 0.45,
   "rag_rerank": true,

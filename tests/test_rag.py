@@ -20,6 +20,7 @@ from sensai.ollama_client import OllamaUnavailable
 from sensai.rag import Rag, parse_filter
 from sensai.rag.chunker import chunk_markdown, load_documents, parse_front_matter
 from sensai.rag.embedder import OllamaEmbedder, normalize
+from sensai.rag.pipeline import parse_scores, rerank_schema
 from sensai.rag.lexical import bm25_scores, tokenize
 from sensai.rag.store import RagStore
 
@@ -56,7 +57,8 @@ class FakeClient:
 
     model = "fake"
 
-    def __init__(self, scores=None, raw=None, error=None):
+    def __init__(self, scores=None, raw=None, error=None, compact=False):
+        self.compact = compact  # reply [7, 2, …] instead of [{"id": 0, "score": 7}, …]
         self.scores = scores or {}
         self.raw = raw
         self.error = error
@@ -71,6 +73,9 @@ class FakeClient:
         if self.raw is not None:
             return self.raw
         n = messages[-1]["content"].count("\n[")
+        self.last_schema = schema
+        if self.compact:
+            return json.dumps({"scores": [self.scores.get(i, 8) for i in range(n)]})
         return json.dumps({"scores": [{"id": i, "score": self.scores.get(i, 8)} for i in range(n)]})
 
 
@@ -321,6 +326,16 @@ class RerankTests(unittest.TestCase):
         self.assertTrue(all(h.rerank >= 0.5 for h in kept))
         self.assertEqual(client.calls, 1)  # one call for all candidates
 
+    def test_compact_scores_and_schema_sized_to_the_candidates(self):
+        client = FakeClient(scores={0: 2, 1: 9}, compact=True)
+        rag = self.rag(client)
+        rag.search("neko kimchi kippu", 5000)
+        ranked = [h for h in rag.last_hits if h.rerank is not None]
+        self.assertGreaterEqual(len(ranked), 2)
+        scores = client.last_schema["properties"]["scores"]
+        self.assertEqual((scores["minItems"], scores["maxItems"]), (len(ranked), len(ranked)))
+        self.assertTrue(any(not h.kept and h.reason.startswith("rerank") for h in ranked))
+
     def test_no_candidates_means_no_rerank_call(self):
         client = FakeClient()
         rag = self.rag(client)
@@ -329,12 +344,29 @@ class RerankTests(unittest.TestCase):
         self.assertEqual(client.calls, 0)
 
     def test_bad_json_falls_back_to_fusion_order(self):
-        for client in (FakeClient(raw="pas du json"), FakeClient(raw='{"scores": [{"id": 0, "score": 9}]}'),
+        for client in (FakeClient(raw="pas du json"), FakeClient(raw='{"scores": [{"id": 7, "score": 9}]}'),
                        FakeClient(error=OllamaUnavailable("down"))):
             rag = self.rag(client)
             out = rag("comment dit-on chat en japonais : neko ?", 2000)
             self.assertTrue(out)  # fallback keeps the cosine-gated candidates
             self.assertTrue(all(h.rerank is None for h in rag.last_hits))
+
+
+class RerankFormatTests(unittest.TestCase):
+    def test_compact_and_legacy_forms(self):
+        self.assertEqual(parse_scores('{"scores": [7, 0, 10]}', 3), [7.0, 0.0, 10.0])
+        legacy = '{"scores": [{"id": 1, "score": 4}, {"id": 0, "score": 9}]}'
+        self.assertEqual(parse_scores(legacy, 2), [9.0, 4.0])
+
+    def test_wrong_count_or_type_is_refused(self):
+        for raw in ('{"scores": [7, 0]}', '{"scores": [7, "x", 1]}', '{"scores": [true, 1, 2]}',
+                    '{"scores": [{"id": 0, "score": 1}]}', '{"notes": [1, 2, 3]}', "[1, 2, 3]"):
+            with self.subTest(raw=raw), self.assertRaises((ValueError, KeyError, TypeError)):
+                parse_scores(raw, 3)
+
+    def test_schema_fixes_the_number_of_scores(self):
+        scores = rerank_schema(4)["properties"]["scores"]
+        self.assertEqual((scores["minItems"], scores["maxItems"], scores["items"]["type"]), (4, 4, "integer"))
 
 
 class IntegrationTests(unittest.TestCase):
