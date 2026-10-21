@@ -352,6 +352,39 @@ class RerankTests(unittest.TestCase):
             self.assertTrue(all(h.rerank is None for h in rag.last_hits))
 
 
+class LexicalRescueTests(unittest.TestCase):
+    """Gate 1 is the cosine, but a chunk at the top of BM25 passes anyway (a rare word the embedding dilutes)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def search(self, **cfg):
+        rag = make_rag(self.tmp.name, rag_rerank=False, rag_min_cosine=0.95, **cfg)
+        rag.sync()
+        rag.search("kimchi", 5000)
+        return rag, {h.chunk.source.rsplit("/", 1)[-1]: h for h in rag.last_hits}
+
+    def test_top_bm25_chunk_is_rescued_under_the_cosine_gate(self):
+        rag, hits = self.search(rag_min_bm25=0.5)
+        self.assertLess(hits["cuisine.md"].cosine, 0.95)
+        self.assertTrue(hits["cuisine.md"].rescued and hits["cuisine.md"].kept)
+        self.assertIn("repêché par BM25", rag.render_hits())
+        self.assertFalse(hits["animaux.md"].kept)  # no exact-word match: the cosine gate still applies
+
+    def test_no_rescue_when_off_or_without_bm25(self):
+        for cfg in ({"rag_min_bm25": 0.0}, {"rag_min_bm25": 0.5, "rag_hybrid": False}, {"rag_min_bm25": 99.0}):
+            with self.subTest(**cfg):
+                _, hits = self.search(**cfg)
+                self.assertFalse(hits["cuisine.md"].kept or hits["cuisine.md"].rescued)
+
+    def test_function_words_do_not_count(self):
+        self.assertEqual(tokenize("Que veut dire hatsuka ?"), ["hatsuka"])
+        self.assertEqual(tokenize("C'est quoi le compteur pour les stylos ?"), ["compteur", "stylos"])
+        # Japanese particles and words a learner may ask to translate are kept
+        self.assertEqual(tokenize("watashi wa, neko ga, oui, non, moi"), ["watashi", "wa", "neko", "ga", "oui", "non", "moi"])
+
+
 class RerankFormatTests(unittest.TestCase):
     def test_compact_and_legacy_forms(self):
         self.assertEqual(parse_scores('{"scores": [7, 0, 10]}', 3), [7.0, 0.0, 10.0])

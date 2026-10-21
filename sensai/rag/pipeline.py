@@ -2,7 +2,8 @@
 
     query ──► metadata filters (explicit + profile)            R2
           ──► dense score (cosine) + lexical score (BM25)      R1 / R2
-          ──► gate 1: drop chunks under rag_min_cosine         R2  (near-misses)
+          ──► gate 1: drop chunks under rag_min_cosine,        R2  (near-misses)
+              unless BM25 ranks them at the top (rescue)
           ──► fusion (RRF) → top rag_candidates
           ──► rerank: the chat model scores each candidate 0-10 in ONE call   R2
           ──► gate 2: drop chunks under rag_min_rerank         R2  (near-misses)
@@ -30,6 +31,7 @@ from .lexical import bm25_scores, tokenize
 from .store import RagStore, StoredChunk
 
 RRF_K = 60  # standard reciprocal-rank-fusion constant
+RESCUE_SHARE = 0.8  # a rescued chunk must score at least this share of the best BM25 score
 RERANK_CHARS = 500  # characters of each candidate shown to the reranker
 
 
@@ -82,6 +84,7 @@ class Hit:
     rerank: float | None = None  # 0-1, None when the reranker did not run or failed
     kept: bool = False
     reason: str = ""
+    rescued: bool = False  # under the cosine gate, let through by a strong exact-word match
 
 
 @dataclass
@@ -212,9 +215,18 @@ class Rag:
                 for rank, h in enumerate(ranking):
                     h.rrf += 1 / (RRF_K + rank + 1)
 
+            # Gate 1 is the cosine, but a chunk at the top of the BM25 ranking passes anyway: a rare word
+            # or a room number (« hatsuka », « A112 ») is exactly what the embedding dilutes and BM25 is
+            # there to catch. The rerank (gate 2) then judges it like any other candidate.
+            best_lexical = max((h.bm25 for h in hits), default=0.0)
             for h in hits:
+                lexical = (self.hybrid and cfg.rag_min_bm25 > 0 and h.bm25 >= cfg.rag_min_bm25
+                           and h.bm25 >= RESCUE_SHARE * best_lexical)
                 if h.cosine < cfg.rag_min_cosine:
-                    h.reason = f"cosinus {h.cosine:.2f} < {cfg.rag_min_cosine:.2f}"
+                    if lexical:
+                        h.rescued = True
+                    else:
+                        h.reason = f"cosinus {h.cosine:.2f} < {cfg.rag_min_cosine:.2f}"
             alive = sorted((h for h in hits if not h.reason), key=lambda h: -h.rrf)
             for h in alive[cfg.rag_candidates:]:
                 h.reason = f"hors des {cfg.rag_candidates} meilleurs candidats"
@@ -250,6 +262,7 @@ class Rag:
             indexed=len(chunks),
             after_filters=len(pool),
             kept=sum(h.kept for h in hits),
+            rescued=sum(h.rescued for h in hits),
             rerank=rerank_status,
             hybrid=self.hybrid,
             filters=[str(f) for f in filters],
@@ -310,6 +323,7 @@ class Rag:
             f"Seuils : cosinus ≥ {cfg.rag_min_cosine}, "
             + (f"rerank ≥ {cfg.rag_min_rerank * 10:.0f}/10" if self.rerank else "rerank désactivé")
             + ("" if self.hybrid else ", BM25 désactivé")
+            + (f", repêchage BM25 ≥ {cfg.rag_min_bm25:g}" if self.hybrid and cfg.rag_min_bm25 else "")
             + f"; {cfg.rag_candidates} candidats → {cfg.rag_top_k} morceaux max",
         ]
         if self.last_query:
@@ -326,6 +340,8 @@ class Rag:
             title = h.chunk.text.splitlines()[0][:48]
             status = "✓" if h.kept else "✗"
             why = "" if h.kept else f"  (écarté : {h.reason})"
+            if h.rescued:
+                why += "  ↑ repêché par BM25"
             lines.append(
                 f" {status} cos {h.cosine:.2f}  bm25 {h.bm25:>5.2f}  rerank {rerank}  "
                 f"{h.chunk.source}#{h.chunk.ord} « {title} »{why}"

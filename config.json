@@ -28,6 +28,7 @@
   "rag_candidates": 4,
   "rag_hybrid": true,
   "rag_min_cosine": 0.45,
+  "rag_min_bm25": 3.0,
   "rag_rerank": true,
   "rag_min_rerank": 0.5,
   "rag_profile_filters": {

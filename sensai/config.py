@@ -40,6 +40,7 @@ class Config:
     rag_candidates: int = 8  # chunks sent to the reranker
     rag_hybrid: bool = True  # fuse BM25 with the cosine ranking (off = dense search only)
     rag_min_cosine: float = 0.30  # gate 1; model- and corpus-dependent, calibrate with /rag search
+    rag_min_bm25: float = 0.0  # gate 1 rescue: a chunk at the top of BM25 above this score passes (0 = off)
     rag_rerank: bool = True  # one extra model call per message that has candidates
     rag_min_rerank: float = 0.5  # gate 2, on the 0-1 rerank score
     rag_profile_filters: dict[str, str] = field(default_factory=lambda: {"langue_cible": "langue"})
@@ -132,6 +133,8 @@ def load_config(argv: list[str] | None = None) -> Config:
         raise ConfigError("rag_top_k >= 1, rag_candidates >= rag_top_k, rag_chunk_chars >= 100")
     if not 0 <= config.rag_min_cosine < 1 or not 0 <= config.rag_min_rerank <= 1:
         raise ConfigError("rag_min_cosine must be in [0, 1) and rag_min_rerank in [0, 1]")
+    if config.rag_min_bm25 < 0:
+        raise ConfigError("rag_min_bm25 must be positive (0 = no lexical rescue)")
     if not isinstance(config.rag_profile_filters, dict):
         raise ConfigError("rag_profile_filters must map profile keys to metadata keys")
     if config.summary_share + config.memory_share > 0.5:
