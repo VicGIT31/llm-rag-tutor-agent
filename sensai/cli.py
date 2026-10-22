@@ -89,6 +89,7 @@ class Chat:
             rag_share=config.rag_share,
             summary_share=config.summary_share,
             memory_share=config.memory_share,
+            followup_words=config.rag_followup_words,
         )
         self.compressor = Compressor(client, config.compress_trigger, config.compress_keep)
         # Runtime switches (features.py): each one gates a source of context at every turn.
@@ -413,9 +414,16 @@ class Chat:
             f"({r.history_kept} messages gardés, {r.history_dropped} écartés)"
         )
         print(f"Mémoire de l'apprenant {r.memory_tokens}/{self.context.memory_cap}")
+        if self.last_stats.prompt_eval_count:
+            print(
+                f"Tokens comptés par Ollama : {self.last_stats.prompt_eval_count} (estimés : {r.used}) — "
+                f"calibration ×{self.context.calibration:.2f}, budget {self.context.budget}/{self.context.raw_budget}"
+            )
         if self.rag is not None and self.rag.last_query:
             kept = sum(h.kept for h in self.rag.last_hits)
             print(f"RAG {r.rag_tokens}/{int(self.context.budget * self.context.rag_share)} tokens : {kept} morceau(x) retenu(s) — détail avec /rag")
+            if "\n" in r.rag_query:  # a short follow-up, searched together with the previous message
+                print(f"Recherche élargie au message précédent : « {r.rag_query.replace(chr(10), ' / ')} »")
         o = self.learner.op_stats(self.config.user)
         if o["total"]:
             print(
@@ -597,11 +605,17 @@ class Chat:
 
     def _finish(self, text: str, answer: str, stats: ChatStats, ev: dict) -> None:
         """Keep the answer, even a partial one, and start the memory extraction in the background."""
+        # The real prompt size corrects the estimates for the next turns (context.py).
+        calibrated = self.context.observe(self.last_report.used, stats.prompt_eval_count)
         ev.update(
             context_tokens=self.last_report.used,
+            prompt_tokens=stats.prompt_eval_count,
+            calibration=self.context.calibration,
             history_dropped=self.last_report.history_dropped,
             output_chars=len(answer),
         )
+        if calibrated:
+            self.notify(f"[budget recalibré : le modèle compte ×{self.context.calibration:.2f} les tokens estimés]")
         if answer:
             msg = Message("assistant", answer, stats.eval_count or estimate_message(answer), meta=self.turn_meta())
             self.history.append(msg)

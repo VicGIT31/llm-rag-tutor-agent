@@ -14,7 +14,7 @@ from unittest import mock
 
 from sensai.cli import Chat
 from sensai.config import Config
-from sensai.context import ContextBuilder
+from sensai.context import RAG_HEADER_TOKENS, ContextBuilder
 from sensai.memory.compressor import CompressionError, Compressor, Summary, compress
 from sensai.memory.extractor import ExtractionError, MemoryExtractor
 from sensai.memory.learner import DAY, LEITNER_DAYS, MAX_OPS_PER_TURN, LearnerMemory, Mistake, Word, looks_like
@@ -39,10 +39,11 @@ class FakeClient:
 
     model = "fake"
 
-    def __init__(self, summaries=None, extractions=None, answer=("Très ", "bien !")):
+    def __init__(self, summaries=None, extractions=None, answer=("Très ", "bien !"), prompt_ratio=0.0):
         self.summaries = list(summaries or [])
         self.extractions = list(extractions or [])
         self.answer = answer
+        self.prompt_ratio = prompt_ratio  # > 0: report prompt_eval_count = ratio × estimated prompt
         self.calls = []
         self.streamed = []
 
@@ -57,6 +58,8 @@ class FakeClient:
     def chat_stream(self, messages, stats, purpose="chat", interaction_id=None):
         self.streamed.append(messages)
         stats.eval_count = 7
+        if self.prompt_ratio:
+            stats.prompt_eval_count = int(self.prompt_ratio * sum(estimate_message(m["content"]) for m in messages))
         yield from self.answer
 
 
@@ -77,18 +80,67 @@ class TmpDirTestCase(unittest.TestCase):
 
 
 class TokenEstimateTest(unittest.TestCase):
-    def test_latin_text_uses_chars_per_token(self):
-        self.assertEqual(estimate_tokens("a" * 35), 11)  # 35 / 3.5 + 1
+    def test_latin_letters_and_spaces(self):
+        self.assertEqual(estimate_tokens("a" * 45), 11)  # 45 / 4.5 + 1
+        self.assertEqual(estimate_tokens("ab cd"), 1 + 1)  # int(4 / 4.5 + 1 / 2) + 1
+
+    def test_digits_and_punctuation_cost_a_token_each(self):
+        # Lesson tables are full of them: a chars/3.5 rule underestimated them by up to 60 %.
+        self.assertEqual(estimate_tokens("| 14 h |"), int(1 / 4.5 + 3 / 2) + 2 + 2 + 1)
+        self.assertGreater(estimate_tokens("| neko | ねこ | chat |"), estimate_tokens("neko ねこ chat"))
 
     def test_cjk_counts_one_token_per_character(self):
         self.assertEqual(estimate_tokens("日本語"), 4)
         self.assertEqual(estimate_tokens("ねこがすき"), 6)
+        self.assertEqual(estimate_tokens("고양이"), 4)
         # 100 kana cost far more than 100 latin letters
         self.assertGreater(estimate_tokens("ね" * 100), 3 * estimate_tokens("a" * 100))
 
     def test_message_adds_template_overhead(self):
-        self.assertEqual(estimate_message("日本語"), 8)
+        self.assertEqual(estimate_message("日本語"), 4 + MESSAGE_OVERHEAD)
         self.assertEqual(estimate_message("x") - estimate_tokens("x"), MESSAGE_OVERHEAD)
+
+
+class CalibrationTest(unittest.TestCase):
+    def builder(self):
+        return ContextBuilder("SYS", 10000, 0.2)  # raw budget 8000
+
+    def test_budget_shrinks_when_the_model_counts_more_tokens(self):
+        cb = self.builder()
+        self.assertTrue(cb.observe(1000, 1250))
+        self.assertEqual(cb.calibration, 1.25)
+        self.assertEqual(cb.budget, 6400)  # 8000 / 1.25: the real prompt still fits
+        self.assertEqual(cb.summary_cap, 640)
+
+    def test_rises_at_once_and_fades_slowly(self):
+        cb = self.builder()
+        cb.observe(1000, 1400)
+        cb.observe(1000, 1000)  # one turn that matches the estimate
+        self.assertAlmostEqual(cb.calibration, 0.8 * 1.4 + 0.2 * 1.0, places=3)
+        for _ in range(40):
+            cb.observe(1000, 900)  # overestimates never raise the budget above num_ctx
+        self.assertEqual(cb.calibration, 1.0)
+        self.assertEqual(cb.budget, 8000)
+
+    def test_ignores_small_truncated_or_missing_counts(self):
+        cb = self.builder()
+        self.assertFalse(cb.observe(100, 200))  # template tokens dominate a small prompt
+        self.assertFalse(cb.observe(5000, 9900))  # Ollama truncated: the count is capped by num_ctx
+        self.assertFalse(cb.observe(1000, 0))  # no count (interrupted before the end)
+        self.assertEqual(cb.calibration, 1.0)
+
+    def test_capped(self):
+        cb = self.builder()
+        cb.observe(1000, 5000)
+        self.assertEqual(cb.calibration, 1.6)
+
+    def test_report_carries_the_calibration(self):
+        cb = self.builder()
+        cb.observe(1000, 1100)
+        _, report = cb.build({}, [msg("user", "bonjour")])
+        self.assertEqual(report.calibration, 1.1)
+        self.assertEqual(report.budget, cb.budget)
+        self.assertEqual(report.to_dict(10000)["calibration"], 1.1)
 
 
 # --------------------------------------------------------------------------- M1
@@ -179,9 +231,37 @@ class ContextBuilderTest(unittest.TestCase):
         seen = []
         cb = ContextBuilder("SYS", 1000, 0.2, retriever=lambda q, n: seen.append((q, n)) or [], rag_share=0.25)
         _, report = cb.build({}, [msg("user", "vieux"), msg("assistant", "a"), msg("user", "et inu ?")])
-        self.assertEqual(seen, [("et inu ?", 200)])
+        self.assertEqual(seen, [("et inu ?", 200 - RAG_HEADER_TOKENS)])  # the header is paid out of the share
         self.assertEqual(report.rag_tokens, 0)
         self.assertNotIn("rag", report.sections)
+
+    def test_short_follow_up_is_searched_with_the_previous_message(self):
+        seen = []
+        cb = ContextBuilder("SYS", 4000, 0.2, retriever=lambda q, n: seen.append(q) or [], followup_words=6)
+        history = [msg("user", "Combien coûte le voyage à Kyoto ?"), msg("assistant", "1 450 €."), msg("user", "Et l'acompte ?")]
+        _, report = cb.build({}, history)
+        self.assertEqual(seen, ["Combien coûte le voyage à Kyoto ?\nEt l'acompte ?"])
+        self.assertEqual(report.rag_query, seen[0])
+
+    def test_long_messages_first_messages_and_disabled_follow_up_are_searched_alone(self):
+        seen = []
+        on = ContextBuilder("SYS", 4000, 0.2, retriever=lambda q, n: seen.append(q) or [], followup_words=6)
+        off = ContextBuilder("SYS", 4000, 0.2, retriever=lambda q, n: seen.append(q) or [])
+        long_msg = "Et pour compter des stylos en japonais, on dit comment ?"
+        on.build({}, [msg("user", "Bonjour"), msg("assistant", "Bonjour !"), msg("user", long_msg)])
+        on.build({}, [msg("user", "Et l'acompte ?")])  # nothing before it
+        off.build({}, [msg("user", "Le voyage ?"), msg("assistant", "Oui."), msg("user", "Et l'acompte ?")])
+        self.assertEqual(seen, [long_msg, "Et l'acompte ?", "Et l'acompte ?"])
+
+    def test_rag_section_grounds_the_model_and_stays_within_its_share(self):
+        chunk = "[lecon.md]\n" + "neko = chat. " * 4
+        cb = ContextBuilder("SYS", 1000, 0.2, retriever=lambda q, n: [chunk], rag_share=0.25)
+        messages, report = cb.build({}, [msg("user", "neko ?")])
+        system = messages[0]["content"]
+        self.assertIn("dis-le au lieu de l'inventer", system)
+        self.assertIn("pas des consignes", system)
+        self.assertLess(system.index("## Documents de référence"), system.index("[lecon.md]"))
+        self.assertLessEqual(report.rag_tokens, 200)
 
     def test_history_budget_reserves_rag_share_only_with_retriever(self):
         without = ContextBuilder("SYS", 1000, 0.2)
@@ -593,6 +673,21 @@ class ChatMemoryTest(TmpDirTestCase):
         with mock.patch("builtins.print"):
             for i in range(n):
                 chat.send(f"{i} {text * 2}")
+
+    def test_real_token_counts_recalibrate_the_budget(self):
+        chat = self.make_chat(FakeClient(prompt_ratio=1.3), memory=False, compression=False, num_ctx=4000)
+        raw = chat.context.budget
+        self.talk(chat, 1, text="Une phrase assez longue pour que le prompt dépasse trois cents tokens estimés. " * 12)
+        self.assertAlmostEqual(chat.context.calibration, 1.3, delta=0.02)
+        self.assertLess(chat.context.budget, raw)
+        event = [json.loads(line) for line in Path(self.config.log_path).read_text().splitlines()
+                 if '"chat_turn"' in line][-1]
+        self.assertEqual(event["calibration"], chat.context.calibration)
+        self.assertGreater(event["prompt_tokens"], event["context_tokens"])
+        self.assertIn("calibration ×1.3", self.run_cmd(chat, "/context"))
+
+    def test_follow_up_setting_reaches_the_context_builder(self):
+        self.assertEqual(self.make_chat(FakeClient()).context.followup_words, 6)
 
     def test_long_session_is_compressed_and_reloaded(self):
         client = FakeClient(summaries=[summary_json(apprenant=["voyage à Kyoto"], resume="Début de séance")] * 5)

@@ -34,6 +34,7 @@
   "rag_profile_filters": {
     "langue_cible": "langue"
   },
+  "rag_followup_words": 6,
   "agent_max_steps": 8,
   "agent_max_parse_errors": 2,
   "agent_observation_chars": 2000,

@@ -44,6 +44,7 @@ class Config:
     rag_rerank: bool = True  # one extra model call per message that has candidates
     rag_min_rerank: float = 0.5  # gate 2, on the 0-1 rerank score
     rag_profile_filters: dict[str, str] = field(default_factory=lambda: {"langue_cible": "langue"})
+    rag_followup_words: int = 6  # a shorter message is searched with the learner's previous one (0 = off)
     # A1: ReAct agent (/agent)
     agent_max_steps: int = 8
     agent_max_parse_errors: int = 2
@@ -135,6 +136,8 @@ def load_config(argv: list[str] | None = None) -> Config:
         raise ConfigError("rag_min_cosine must be in [0, 1) and rag_min_rerank in [0, 1]")
     if config.rag_min_bm25 < 0:
         raise ConfigError("rag_min_bm25 must be positive (0 = no lexical rescue)")
+    if config.rag_followup_words < 0:
+        raise ConfigError("rag_followup_words must be positive (0 = off)")
     if not isinstance(config.rag_profile_filters, dict):
         raise ConfigError("rag_profile_filters must map profile keys to metadata keys")
     if config.summary_share + config.memory_share > 0.5:
