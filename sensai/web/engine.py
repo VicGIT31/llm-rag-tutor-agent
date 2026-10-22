@@ -409,6 +409,7 @@ def turn_report(chat: Chat) -> dict:
             "duration_ms": round(chat.last_stats.total_duration_ms),
         },
         "sources": chat.last_sources,
+        "check": chat.last_check.to_dict() if chat.last_check and chat.last_check.checked else None,
     }
 
 

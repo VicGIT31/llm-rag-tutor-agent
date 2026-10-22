@@ -139,6 +139,22 @@ class MetricsTest(unittest.TestCase):
     def test_empty(self):
         self.assertIn("Aucun", render_metrics(compute_metrics([])))
 
+    def test_rag_fact_checks_and_calibration(self):
+        events = [
+            {"ts": 1, "event": "rag_retrieve", "status": "ok", "duration_ms": 900, "kept": 2, "rerank": "ok"},
+            {"ts": 2, "event": "rag_retrieve", "status": "ok", "duration_ms": 100, "kept": 0, "rerank": "off"},
+            {"ts": 3, "event": "chat_turn", "status": "ok", "facts_checked": 3, "facts_unsupported": 1, "calibration": 1.12},
+            {"ts": 4, "event": "chat_turn", "status": "ok", "facts_checked": 2, "facts_unsupported": 0, "calibration": 1.08},
+            {"ts": 5, "event": "chat_turn", "status": "ok"},
+        ]
+        m = compute_metrics(events)
+        self.assertEqual((m["rag"]["searches"], m["rag"]["avg_kept"], m["rag"]["rerank"]), (2, 1.0, {"ok": 1, "off": 1}))
+        self.assertEqual((m["rag"]["facts_checked"], m["rag"]["facts_unsupported"], m["rag"]["turns_with_unsupported"]), (5, 1, 1))
+        self.assertEqual(m["calibration"], 1.08)
+        text = render_metrics(m)
+        self.assertIn("5 faits vérifiés dans 2 réponses, 1 absent(s) des leçons", text)
+        self.assertIn("×1.08", text)
+
     def test_cli_entry_point(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "l.jsonl"

@@ -56,6 +56,10 @@ def compute_metrics(events: list[dict]) -> dict:
     confirms = [e for e in events if e["event"] == "confirmation"]
     files = [e for e in events if e["event"] == "file_access"]
     sandbox = [e for e in events if e["event"] == "sandbox_run"]
+    retrievals = [e for e in events if e["event"] == "rag_retrieve" and e.get("status") == "ok"]
+    turns = [e for e in events if e["event"] == "chat_turn"]
+    checked_turns = [e for e in turns if e.get("facts_checked")]
+    calibrations = [e["calibration"] for e in turns if e.get("calibration")]
 
     per_tool: dict[str, dict] = defaultdict(lambda: {"calls": 0, "ok": 0, "error": 0, "denied": 0, "refused": 0, "ms": []})
     for e in tools:
@@ -105,6 +109,17 @@ def compute_metrics(events: list[dict]) -> dict:
             **_latency([e.get("duration_ms", 0) for e in sandbox]),
             "outcomes": dict(Counter(e.get("outcome", "?") for e in sandbox)),
         },
+        "rag": {
+            "searches": len(retrievals),
+            **{f"search_{k}": v for k, v in _latency([e.get("duration_ms", 0) for e in retrievals]).items() if k != "count"},
+            "avg_kept": round(sum(e.get("kept", 0) for e in retrievals) / len(retrievals), 2) if retrievals else 0.0,
+            "rerank": dict(Counter(e.get("rerank", "?") for e in retrievals)),
+            "checked_turns": len(checked_turns),
+            "facts_checked": sum(e["facts_checked"] for e in checked_turns),
+            "facts_unsupported": sum(e.get("facts_unsupported", 0) for e in checked_turns),
+            "turns_with_unsupported": sum(1 for e in checked_turns if e.get("facts_unsupported")),
+        },
+        "calibration": calibrations[-1] if calibrations else None,
         "errors": errors,
         "timeouts": timeouts,
         "error_rate": round(errors / len(events), 3) if events else 0.0,
@@ -141,6 +156,20 @@ def render_metrics(m: dict) -> str:
     fa = m["file_access"]
     if fa["allowed"] or fa["denied"]:
         lines.append(f"Accès fichiers : {fa['allowed']} autorisés, {fa['denied']} refusés")
+    rag = m.get("rag", {})
+    if rag.get("searches"):
+        rerank = ", ".join(f"{k} {v}" for k, v in rag["rerank"].items())
+        lines.append(
+            f"RAG : {rag['searches']} recherches — moy. {rag['search_avg_ms']:.0f} ms, p95 {rag['search_p95_ms']:.0f} ms — "
+            f"{rag['avg_kept']} morceaux injectés en moyenne — rerank : {rerank}"
+        )
+    if rag.get("checked_turns"):
+        lines.append(
+            f"Vérification des faits : {rag['facts_checked']} faits vérifiés dans {rag['checked_turns']} réponses, "
+            f"{rag['facts_unsupported']} absent(s) des leçons ({rag['turns_with_unsupported']} réponse(s) signalée(s))"
+        )
+    if m.get("calibration"):
+        lines.append(f"Calibration des tokens : le modèle compte ×{m['calibration']:.2f} les tokens estimés")
     sb = m["sandbox"]
     if sb["count"]:
         outcomes = ", ".join(f"{k} {v}" for k, v in sb["outcomes"].items())

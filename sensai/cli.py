@@ -25,6 +25,7 @@ from .monitoring import compute_metrics, load_events, render_metrics
 from .observability import EventLogger, new_interaction_id
 from .ollama_client import ChatStats, ModelNotFound, OllamaClient, OllamaError, OllamaUnavailable, Placement
 from .rag import Rag
+from .rag.grounding import GroundingCheck, check_answer
 
 HELP = """Commandes :
   /help                      cette aide
@@ -112,6 +113,8 @@ class Chat:
         self.interrupted = False  # was the last answer cut short?
         self.last_sources: list[dict] = []  # lesson chunks used by the last answer
         self.last_off: list[str] = []  # features switched off for the last answer
+        self.last_chunks: list[str] = []  # text of the lesson chunks put in the last prompt
+        self.last_check: GroundingCheck | None = None  # facts of the last answer looked up in those chunks
         # Side messages ([mémoire : …], [compression …]): stderr in the terminal, events in the web UI.
         self.notify: Callable[[str], None] = lambda message: print(message, file=sys.stderr)
 
@@ -159,6 +162,7 @@ class Chat:
         if latest is None or not self.load_session(latest):
             self.new_session()
         self.last_report, self.last_memory, self.last_sources, self.last_off = None, None, [], []
+        self.last_chunks, self.last_check = [], None
         self.logger.log("user_switch", user=name, created=created)
         return created
 
@@ -348,7 +352,12 @@ class Chat:
                     print(event["text"], end="", flush=True)
                 elif kind == "side_done":
                     srcs = ", ".join(f"{s['source'].split('/')[-1]}#{s['part']}" for s in event["sources"]) or "aucune leçon"
-                    print(f"\n[{event['context']['used']} tokens de prompt — {srcs} — {event['duration_ms'] / 1000:.1f} s]")
+                    check = event.get("check")
+                    facts = ""
+                    if check:
+                        facts = (f" — {len(check['unsupported'])} fait(s) absent(s) des leçons : {', '.join(check['unsupported'])}"
+                                 if check["unsupported"] else f" — {check['checked']} fait(s) vérifié(s) dans les leçons")
+                    print(f"\n[{event['context']['used']} tokens de prompt — {srcs} — {event['duration_ms'] / 1000:.1f} s{facts}]")
                 elif kind == "verdict":
                     print(f"\n── Arbitrage du modèle ──\n{event['on_label']} : {event['on']['score']}/10 — {event['on']['reason']}")
                     print(f"{event['off_label']} : {event['off']['score']}/10 — {event['off']['reason']}")
@@ -571,6 +580,8 @@ class Chat:
                 self._compress()
         messages, self.last_report, self.last_memory = self.build_prompt(text, self.history)
         self.last_sources = kept_sources(self)
+        self.last_chunks = [h.chunk.text for h in self.rag.last_hits if h.kept] if self.last_sources else []
+        self.last_check = None
         self.last_off = features.disabled(self.switches, self.feature_available())
         if self.last_report.history_dropped:
             self.notify(f"[{self.last_report.history_dropped} anciens messages hors contexte]")
@@ -601,6 +612,8 @@ class Chat:
             meta["off"] = self.last_off
         if self.last_sources:
             meta["sources"] = [{"source": s["source"], "part": s["part"]} for s in self.last_sources]
+        if self.last_check and self.last_check.checked:
+            meta["check"] = self.last_check.to_dict()
         return meta or None
 
     def _finish(self, text: str, answer: str, stats: ChatStats, ev: dict) -> None:
@@ -616,6 +629,12 @@ class Chat:
         )
         if calibrated:
             self.notify(f"[budget recalibré : le modèle compte ×{self.context.calibration:.2f} les tokens estimés]")
+        if answer and self.last_chunks:
+            # R2: every date, time, room, price or score of the answer must come from the lessons used.
+            self.last_check = check_answer(answer, self.last_chunks, text)
+            ev.update(facts_checked=len(self.last_check.checked), facts_unsupported=len(self.last_check.unsupported))
+            if self.last_check.unsupported:
+                self.notify(f"[vérification : {self.last_check.describe()}]")
         if answer:
             msg = Message("assistant", answer, stats.eval_count or estimate_message(answer), meta=self.turn_meta())
             self.history.append(msg)

@@ -26,6 +26,7 @@ from .memory.store import Message
 from .memory.tokens import estimate_message
 from .observability import new_interaction_id
 from .ollama_client import ChatStats, OllamaError
+from .rag.grounding import check_answer
 
 JUDGE_CHARS = 2500  # of each answer, and of the reference, shown to the judge
 
@@ -127,6 +128,7 @@ def compare(chat, text: str, feature_id: str, judge: bool = True) -> Iterator[di
             chat._apply_switches()
             messages, report, memory = chat.build_prompt(text, history)
             sources[side] = kept_sources(chat)
+            chunks = [h.chunk.text for h in chat.rag.last_hits if h.kept] if sources[side] else []
             label = f"{'Avec' if enabled else 'Sans'} {feature.label[0].lower()}{feature.label[1:]}"
             reference = contribution(chat, feature_id, memory, history) if enabled else ""
             yield {"type": "side", "side": side, "label": label}
@@ -141,10 +143,12 @@ def compare(chat, text: str, feature_id: str, judge: bool = True) -> Iterator[di
             finally:
                 pieces.close()
             sides[side] = Side(label, "".join(parts), reference)
+            check = check_answer(sides[side].answer, chunks, text) if chunks else None
             yield {
                 "type": "side_done", "side": side, "label": label,
                 "context": report.to_dict(chat.config.num_ctx),
                 "sources": sources[side],
+                "check": check.to_dict() if check and check.checked else None,
                 "ollama": {"prompt_tokens": stats.prompt_eval_count, "output_tokens": stats.eval_count},
                 "duration_ms": round((time.perf_counter() - start) * 1000),
             }

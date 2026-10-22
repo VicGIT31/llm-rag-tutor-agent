@@ -33,6 +33,7 @@ class FakeClient:
         self.purposes: list[str] = []
         self.judge_prompts: list[str] = []
         self.extractions = 0
+        self.tail = "sanbon."  # end of every streamed answer
 
     def chat_stream(self, messages, stats, purpose="chat", interaction_id=None):
         self.streamed.append(messages)
@@ -40,7 +41,7 @@ class FakeClient:
         stats.eval_count = 2
         grounded = "## Documents de référence" in messages[0]["content"]
         yield "Selon ta leçon, " if grounded else "De mémoire, "
-        yield "sanbon."
+        yield self.tail
 
     def chat(self, messages, stats, schema=None, options=None, purpose="chat", interaction_id=None):
         self.purposes.append(purpose)
@@ -99,6 +100,38 @@ class ChatCase(unittest.TestCase):
 
     def system(self, index=-1) -> str:
         return self.client.streamed[index][0]["content"]
+
+
+class GroundingCheckTest(ChatCase):
+    """R2: the dates, times, rooms… of a grounded answer are looked up in the lesson chunks it was given."""
+
+    def chat_turn_event(self) -> dict:
+        lines = Path(self.config.log_path).read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if '"chat_turn"' in line][-1]
+
+    def test_facts_absent_from_the_lessons_are_reported_and_stored(self):
+        chat = self.make_chat(with_rag=True)
+        notes = []
+        chat.notify = notes.append
+        self.client.tail = "c'est le 12 mars à 14 h, salle B204."
+        self.say("que veut dire neko en japonais ?")
+        self.assertTrue(chat.last_sources)
+        self.assertEqual(chat.last_check.unsupported, ["12mars", "14h", "b204"])
+        meta = self.store.load_messages(chat.session_id)[-1].meta
+        self.assertEqual(meta["check"], {"checked": 3, "unsupported": ["12mars", "14h", "b204"]})
+        self.assertTrue(any("absent" in n for n in notes))
+        event = self.chat_turn_event()
+        self.assertEqual((event["facts_checked"], event["facts_unsupported"]), (3, 3))
+
+    def test_answer_without_facts_or_without_lessons_is_not_checked(self):
+        chat = self.make_chat(with_rag=True)
+        self.say("que veut dire neko en japonais ?")  # « Selon ta leçon, sanbon. »: nothing to look up
+        self.assertEqual(chat.last_check.checked, [])
+        self.assertNotIn("check", self.store.load_messages(chat.session_id)[-1].meta or {})
+        chat.set_feature("rag", False)
+        self.client.tail = "le 12 mars."
+        self.say("et demain ?")
+        self.assertIsNone(chat.last_check)  # no lesson in the prompt: nothing to check against
 
 
 class SwitchTest(ChatCase):
@@ -209,6 +242,13 @@ class SwitchTest(ChatCase):
 class CompareTest(ChatCase):
     def run_compare(self, feature, text="que veut dire neko en japonais ?", judge=True):
         return list(compare(self.chat, text, feature, judge))
+
+    def test_facts_of_the_grounded_side_are_checked(self):
+        self.make_chat(with_rag=True)
+        self.client.tail = "c'est le 12 mars."
+        done = {e["side"]: e for e in self.run_compare("rag", judge=False) if e["type"] == "side_done"}
+        self.assertEqual(done["on"]["check"], {"checked": 1, "unsupported": ["12mars"]})
+        self.assertIsNone(done["off"]["check"])  # no lesson in that prompt: nothing to check against
 
     def test_rag_on_and_off_side_by_side_and_nothing_is_stored(self):
         chat = self.make_chat(with_rag=True)
