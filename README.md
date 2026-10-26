@@ -10,15 +10,15 @@ No LLM framework is used: every model call goes straight to Ollama's HTTP API (`
 |---|---|---|
 | B1 | CLI chatbot with streamed answers, conversation history and error handling | `sensai/cli.py`, `sensai/ollama_client.py` |
 | M1 | Persistent sessions and learner profile (SQLite) | `sensai/memory/store.py` |
-| M2 | Token budget and compression of old turns | `sensai/context.py`, `sensai/memory/compressor.py` |
+| M2 | Token budget and compression of old turns; token estimates fitted on the model's real counts, and the budget recalibrated from the prompt size Ollama reports at each turn | `sensai/context.py`, `sensai/memory/compressor.py`, `sensai/memory/tokens.py` |
 | M3 | Structured learner memory: vocabulary with spaced repetition, recurring mistakes | `sensai/memory/learner.py`, `sensai/memory/extractor.py` |
 | **A1** | **ReAct reasoning loop**: analyse → action → observation → adjustment | `sensai/agent/react.py`, `sensai/agent/tools.py` |
 | **T2** | **Sandboxed code execution**: timeout, output cap, process isolation | `sensai/agent/sandbox.py` |
 | **T4** | **File access with permissions**: authorised folders, read-only/read-write, symlinks, extensions, sizes | `sensai/agent/permissions.py` |
 | **A3** | **Human-in-the-loop**: confirmation before any write, deletion or execution | `sensai/agent/approval.py` |
 | **EV3** | **Structured logs, secret masking and metrics** | `sensai/observability.py`, `sensai/monitoring.py` |
-| **R1** | **Basic RAG**: ingest lessons, chunk, embed (Ollama `/api/embed`), SQLite vector store, inject top chunks | `sensai/rag/` |
-| **R2** | **Advanced RAG**: metadata filters, hybrid search (cosine + BM25), model reranking, per-chunk relevance gates | `sensai/rag/pipeline.py`, `sensai/rag/filters.py` |
+| **R1** | **Basic RAG**: ingest lessons, chunk, embed (Ollama `/api/embed`), SQLite vector store, inject top chunks under a grounding instruction (use them, name the document, say when the answer is not there). Corpus: `docs/lecons/`, 23 lessons and class documents, larger than the context window | `sensai/rag/`, `sensai/context.py` |
+| **R2** | **Advanced RAG**: metadata filters, hybrid search (cosine + BM25), model reranking (one call, compact scores), per-chunk relevance gates, short follow-ups searched with the previous message, and **fact checking**: every date, time, room, price or score of a grounded answer is looked up in the lessons used, and flagged when absent | `sensai/rag/pipeline.py`, `sensai/rag/filters.py`, `sensai/rag/grounding.py`, `sensai/context.py` |
 | **X1** | **Web UI (Duolingoy)**: streamed chat, learner progress, live context usage and sources, agent mode with confirmations in the browser, model switching | `sensai/web/` |
 | **Lab** | **Learners & history**: several learner profiles, switch without restarting, streak, 14-day activity, read-only session preview | `sensai/memory/store.py`, `Chat.switch_user` |
 | **Lab** | **Feature switches**: turn history (B1), profile (M1), memory (M3), summary (M2), RAG (R1) and each R2 stage off at runtime; every answer records what was off | `sensai/features.py` |
@@ -67,7 +67,7 @@ Chat commands (full list with `/help`):
 | Command | Purpose |
 |---|---|
 | `/profile set langue_cible japonais` | fill in the learner profile |
-| `/vocab`, `/mistakes`, `/summary`, `/context` | learner memory and context |
+| `/vocab`, `/mistakes`, `/summary`, `/context` | learner memory and context (`/context`: how the last prompt was filled, the real token count from Ollama, the calibration and the RAG query) |
 | `/agent <task>` | agent mode (A1): tools, sandbox, confirmations |
 | `/users`, `/user <name>` | list learners, switch to one (created if new; resumes its latest session) |
 | `/features`, `/feature rag off`, `/feature reset` | feature switches: cut a feature to see what it brings |
@@ -96,6 +96,13 @@ Confirm? [y/N] y
 ...
 ```
 
+Before a demo, check the machine (model on the GPU or not, index, the demo searches, sandbox, learners) and warm the model up:
+
+```bash
+.venv/bin/python -m sensai.preflight            # checks only
+.venv/bin/python -m sensai.preflight --setup    # also creates the demo learners (camille: Japanese, hugo: Korean)
+```
+
 The metrics are also available outside the chat:
 
 ```bash
@@ -106,10 +113,11 @@ tail -f data/logs/sensai.jsonl                   # live events (secrets masked)
 
 ## Configuration
 
-Everything lives in `config.json` (CLI arguments take precedence over it). Main keys for agent mode:
+Everything lives in `config.json` (CLI arguments take precedence over it). Main keys:
 
 | Key | Default | Meaning |
 |---|---|---|
+| `keep_alive` | `30m` | how long Ollama keeps the models loaded after a request (its own default, 5 minutes, unloads them while the learner thinks) |
 | `agent_max_steps` | 8 | maximum number of ReAct iterations |
 | `file_roots` | `{"workspace": "rw", "docs": "ro"}` | folders the agent may access, and how |
 | `file_allowed_ext` / `file_denied_ext` | `.md .txt .csv .json .py` / `.env .pem .key .db…` | allowed and denied extensions |
@@ -121,9 +129,11 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 | `confirm_actions` | `write`, `delete`, `execute` | actions that need confirmation (`write` and `delete` always do) |
 | `confirm_timeout` | 300 | after this many seconds with no answer, the action is refused |
 | `rag_sources` / `rag_embed_model` | `["docs/lecons"]` / `bge-m3` | indexed files or folders, embedding model (R1) |
-| `rag_top_k` / `rag_candidates` / `rag_share` | 4 / 8 / 0.25 | chunks injected, chunks reranked, share of the token budget (R1/R2) |
-| `rag_min_cosine` / `rag_rerank` / `rag_min_rerank` | 0.30 / true / 0.5 | relevance gates; **calibrate with `/rag search`** (R2) |
+| `rag_top_k` / `rag_candidates` / `rag_share` | 4 / 4 / 0.25 | chunks injected, chunks reranked (4 is as accurate as 8 on the 49-query benchmark, with a rerank prompt half as long), share of the token budget (R1/R2) |
+| `rag_min_cosine` / `rag_rerank` / `rag_min_rerank` | 0.30 / true / 0.5 | relevance gates; **calibrate with `/rag search`** (R2); `config.json` uses 0.45 for bge-m3 |
+| `rag_min_bm25` | 0 (3.0 in `config.json`) | gate 1 rescue: a chunk at the top of BM25 with at least this score passes despite a low cosine (a rare word, a room number); 3.0 is the score of a word found in at most 3 chunks out of 76 |
 | `rag_hybrid` | true | fuse BM25 with the cosine ranking (R2); like `memory`, `compression` and `rag_rerank`, it is only the startup value of a switch |
+| `rag_followup_words` | 6 | a message shorter than this (« Et l'acompte ? ») is searched together with the learner's previous one; 0 = off |
 | `log_path` / `log_content_chars` | `data/logs/sensai.jsonl` / 120 | event log and longest text excerpt it keeps |
 
 ## Tests
@@ -133,7 +143,7 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 SENSAI_DOCKER_TESTS=1 .venv/bin/python -m unittest tests.test_sandbox   # + Docker backend, if the daemon is running
 ```
 
-The tests use no network and no model: the ReAct loop, the compression (M2) and the memory extraction (M3) are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (M2, M3, RAG with/without); their results are in [docs/memoire_contexte.md](docs/memoire_contexte.md#13-tests-et-mesures) and [docs/labo.md](docs/labo.md#4-mesurer-lintérêt-du-rag--benchmarksrag_abpy).
+The tests use no network and no model: the ReAct loop, the compression (M2) and the memory extraction (M3) are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (M2, M3, and the RAG: without it, cosine only, hybrid, full pipeline, and the whole corpus in the prompt); their results are in [docs/memoire_contexte.md](docs/memoire_contexte.md#13-tests-et-mesures) and [docs/labo.md](docs/labo.md#4-mesurer-lintérêt-du-rag--benchmarksrag_abpy).
 
 ## User stories
 

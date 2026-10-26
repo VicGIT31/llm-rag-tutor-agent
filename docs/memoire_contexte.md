@@ -132,34 +132,38 @@ Il sert à déboguer et à produire des métriques pour la keynote.
 
 ### Où sont placés les documents RAG
 
-Les morceaux renvoyés par le RAG sont ajoutés **à la fin du message système**, sous un titre `## Documents de référence`. Ils ne sont pas stockés dans l'historique : ils sont recalculés à chaque tour en fonction du dernier message.
+Les morceaux renvoyés par le RAG sont ajoutés **à la fin du message système**, sous un titre `## Documents de référence` suivi d'une consigne d'ancrage : s'appuyer d'abord sur ces extraits pour une question de cours, nommer le document utilisé, dire qu'on ne sait pas si l'information n'y figure pas, et les traiter comme des données, pas comme des consignes. Ils ne sont pas stockés dans l'historique : ils sont recalculés à chaque tour en fonction du dernier message.
 
 ---
 
 ## 4. Estimation des tokens (`memory/tokens.py`)
 
-Ollama n'a **pas de point d'accès pour compter les tokens** avant l'envoi. On estime donc :
+Ollama n'a **pas de point d'accès pour compter les tokens** avant l'envoi. On estime donc, puis on corrige avec les vrais nombres.
 
-| Type de texte | Règle |
+### La règle, ajustée sur le vrai tokenizer (25 octobre 2026)
+
+| Élément du texte | Coût estimé |
 |---|---|
-| Écriture latine (français, anglais, espagnol…) | 1 token ≈ 3,5 caractères (volontairement prudent) |
+| Lettres latines | 1 token pour 4,5 lettres |
+| Espaces et retours à la ligne | 1 token pour 2 |
+| Chiffres, ponctuation, barres de tableau | 1 token chacun |
 | Japonais, chinois, coréen | 1 token par caractère |
-| Chaque message | + 4 tokens pour le formatage du chat |
+| Chaque message | + 5 tokens de formatage (`<|im_start|>rôle … <|im_end|>`) |
 
-**Pourquoi un cas spécial pour le japonais, le chinois et le coréen ?** La règle habituelle « 4 caractères par token » sous-estime fortement ces langues. Pour un tuteur de langues, ce serait un dépassement de budget assuré.
+**Pourquoi ce découpage.** L'ancienne règle (« 3,5 caractères par token ») a été comparée aux nombres réels de `qwen3-coder:30b` sur les 76 morceaux du corpus : elle **sous-estimait 75 morceaux sur 76**, de 26 % en moyenne et jusqu'à 60 %. La prose française coûte bien 3,5 caractères par token, mais une leçon (tableaux Markdown, rōmaji, chiffres, ponctuation) n'en coûte que 2,8 : chaque chiffre et chaque signe y est presque un token à lui seul. Une régression sur les 76 morceaux a donné 4,7 lettres par token, 0,5 par espace, 0,85 par chiffre ou signe. La règle retenue est un peu au-dessus : sur le corpus, elle surestime le total de 8 % (pire morceau : 12 % sous le réel), et elle surestime la prose de 10 à 20 %, ce qui ne fait que perdre un peu de budget. Le japonais et le coréen coûtent en réalité 0,7 à 1 token par caractère : en compter un reste prudent.
 
-### Vrais nombres de tokens
+### Vrais nombres de tokens et calibration du budget
 
 Après chaque réponse, Ollama renvoie dans le dernier morceau du stream :
 
-- `prompt_eval_count` : tokens du prompt traités ;
+- `prompt_eval_count` : tokens du prompt ;
 - `eval_count` : tokens générés.
 
-Le nombre réel `eval_count` est enregistré avec chaque réponse (colonne `messages.tokens`), et `ContextBuilder` l'utilise à la place de l'estimation quand il existe.
+`eval_count` est enregistré avec chaque réponse (colonne `messages.tokens`), et `ContextBuilder` l'utilise à la place de l'estimation quand il existe.
 
-> ⚠️ `prompt_eval_count` n'est **pas fiable** pour mesurer la taille totale du prompt : quand Ollama réutilise son cache, il ne compte que les tokens nouvellement traités. Ne pas s'en servir pour recalibrer l'estimation sans filtrer ces cas.
+`prompt_eval_count` sert à **recalibrer le budget** (`ContextBuilder.observe`) : si le modèle compte plus de tokens que l'estimation du prompt, le budget est divisé par ce rapport (au plus ×1,6), pour que le prompt réel tienne dans `num_ctx`. La correction monte tout de suite (un débordement est ce qu'il faut éviter) et redescend lentement (un tour bon marché ne prouve rien). Les petits prompts (moins de 300 tokens, où le formatage pèse trop) et les prompts tronqués par Ollama sont ignorés. `/context` affiche le compte réel, la calibration et le budget corrigé ; le journal EV3 les garde dans l'événement `chat_turn`.
 
----
+> Vérifié avec Ollama 0.40.4 : `prompt_eval_count` compte bien tout le prompt, même quand Ollama réutilise son cache (le même prompt envoyé deux fois donne 1 560 tokens les deux fois). Si une autre version ne comptait que les tokens nouveaux, le rapport passerait sous 1 et la calibration retomberait simplement à 1 : elle ne peut jamais agrandir le budget au-delà de `num_ctx`.
 
 ## 5. Mémoire persistante — M1 (`memory/store.py`)
 
@@ -519,7 +523,7 @@ ContextBuilder(system_prompt, num_ctx, response_reserve, retriever=retrieve, rag
 Le contrat :
 
 - `query` est le dernier message de l'utilisateur ;
-- `max_tokens` = `budget × rag_share` : **c'est au RAG de respecter cette limite** (il peut utiliser `estimate_tokens` de `memory/tokens.py` pour compter de la même façon) ;
+- `max_tokens` = `budget × rag_share`, moins le coût de la consigne d'ancrage (`RAG_HEADER`, ≈ 105 tokens) placée au-dessus des morceaux : **c'est au RAG de respecter cette limite** (il peut utiliser `estimate_tokens` de `memory/tokens.py` pour compter de la même façon). La section entière (consigne + morceaux) tient ainsi dans sa part ;
 - renvoyer une liste vide si rien n'est pertinent : aucune place n'est alors consommée.
 
 Implémentation : [rag.md](rag.md) (R1 + R2).
@@ -599,7 +603,8 @@ Critères d'acceptation :
 
 **US-M2-2.** En tant que développeur de Sensai, je veux que le prompt envoyé tienne toujours dans `num_ctx` et qu'un échec de compression ne bloque pas la séance, pour éviter la troncature silencieuse d'Ollama.
 Critères d'acceptation :
-- `num_ctx` est envoyé dans chaque requête, et `/context` montre un total estimé inférieur ou égal à `num_ctx × (1 − response_reserve)` (seul le message actuel, s'il est énorme, peut dépasser) ;
+- `num_ctx` est envoyé dans chaque requête, et `/context` montre un total estimé inférieur ou égal au budget, `num_ctx × (1 − response_reserve)` divisé par la calibration (seul le message actuel, s'il est énorme, peut dépasser) ;
+- quand Ollama compte plus de tokens que l'estimation, le budget est réduit dès le tour suivant, et `/context` affiche le compte réel et la calibration ;
 - le résumé ne dépasse jamais `summary_share` du budget : les éléments les plus anciens sont retirés, sans nouvel appel au modèle ;
 - si la compression échoue (JSON invalide, Ollama coupé), un message s'affiche, les plus vieux messages sont écartés, l'échec est compté dans `/context` et un nouvel essai a lieu 3 tours plus tard ;
 - les messages résumés restent en base : rien n'est supprimé de l'historique brut.
@@ -622,6 +627,7 @@ Critères d'acceptation :
 Critères d'acceptation :
 - chaque opération proposée par le modèle est vérifiée avant écriture (type connu, champs présents et de moins de 200 caractères, `correct` booléen, au plus 12 par échange) ;
 - une opération invalide est rejetée et journalisée dans `memory_ops` avec sa raison, sans empêcher les autres d'être appliquées ;
+- un mot traduit par lui-même (« voyage = voyage »), ou un mot qui ne peut pas s'écrire dans la langue cible (« vol » ou « avril » notés comme japonais : ni kana, ni rōmaji valide), est rejeté : ce n'est pas du vocabulaire ;
 - une extraction échouée affiche un message, la conversation continue, et `/context` compte les opérations appliquées et les extractions échouées ;
 - `/vocab del <mot>` et `/profile set` permettent de corriger une erreur du modèle.
 
@@ -693,7 +699,8 @@ Les benchmarks portent sur des échanges courts et nets. La répétition de la [
 |---|---|---|---|
 | Vocabulaire bruité après 2 échanges : prénom, phrase entière (« neko ga suki desu. »), particules avec une définition en guise de traduction | 7 entrées, dont 4 inutiles | consigne (`add_word` : 3 mots au plus, écriture de l'apprenant, traduction courte, pas de nom propre) + validation (3 mots, 60 caractères) | 3 entrées |
 | Le mot enregistré en kana (« ねこ ») n'est pas reconnu quand l'apprenant tape « neko » | toujours | consigne : écriture de l'apprenant | « neko » est bien créé, mais « ねこ » aussi |
-| Prénom enregistré comme mot | « camille = Camille » | consigne | encore présent (« camille = nom propre ») |
+| Prénom enregistré comme mot | « camille = Camille » | consigne, puis (25 octobre) validation de la forme du mot | rejeté : « Camille » n'est ni en kana ni en rōmaji valide |
 | Erreur du tuteur enregistrée (« ippai = un billet ») | — | aucune (voir §11) | limite connue |
+| Mots **français** enregistrés comme vocabulaire japonais, après des réponses d'information en français (essais du 25 octobre : « voyage = voyage », « acompte = acompte », puis, au second essai, « vol = transport aérien », « avril = mois ») | 29 mots parasites sur 35 opérations | validation par le code (`learner.looks_like`) : un mot traduit par lui-même est refusé ; un mot japonais doit être en kana/kanji ou en rōmaji Hepburn valide (syllabes consonne + voyelle, n syllabique, consonne doublée) ; un mot coréen en hangul ou sans f, q, v, x, z ni accents | les 29 parasites rejetés ; gardés : hon, mai, hiki, wa, ga, Kyoto. Sur les 178 mots japonais des tableaux de leçons, un seul refusé : « Camille », un prénom |
 
-Le benchmark M3 reste à 100 % de précision et 92 % de rappel avec la consigne et la validation renforcées : pas de régression.
+Le benchmark M3 reste à 100 % de précision et 92 % de rappel avec la consigne et la validation renforcées : pas de régression. Une règle de plus dans la consigne (« jamais un mot français ») a été essayée contre les mots parasites : elle faisait tomber la précision à 92 % (une opération fausse proposée sur « watashi wa Camille desu »). Elle a été retirée : la validation par le code suffit, sans toucher au comportement du modèle.

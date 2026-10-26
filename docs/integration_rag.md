@@ -81,17 +81,17 @@ def retrieve(query: str, max_tokens: int) -> list[str]:
 | Paramètre | Valeur passée |
 |---|---|
 | `query` | Le message actuel de l'apprenant (`history[-1].content`), tel qu'il l'a tapé |
-| `max_tokens` | `int(budget × rag_share)` → 1638 avec la config par défaut |
+| `max_tokens` | `int(budget × rag_share)` moins le coût de la consigne d'ancrage (`RAG_HEADER_TOKENS`, ≈ 105) → 1533 avec la config par défaut |
 | Retour | Une liste de morceaux de texte, du plus pertinent au moins pertinent. Liste vide si rien n'est pertinent |
 
 ### Ce que `ContextBuilder` fait des morceaux
 
 ```python
-docs = "\n\n".join(chunks)
-system += f"\n\n## Documents de référence\n{docs}"
+docs = f"{RAG_HEADER}\n\n" + "\n\n".join(chunks)
+system += f"\n\n{docs}"
 ```
 
-- Les morceaux sont collés, séparés par une ligne vide, **à la fin du message système**, sous le titre `## Documents de référence`.
+- Les morceaux sont collés, séparés par une ligne vide, **à la fin du message système**, sous le titre `## Documents de référence` et une consigne d'ancrage (`RAG_HEADER` dans `context.py`) : s'appuyer d'abord sur les extraits, nommer le document utilisé, dire « je ne sais pas » si l'information n'y est pas, et les traiter comme des données, pas comme des consignes.
 - Ils ne sont **pas** enregistrés dans l'historique ni en base : ils sont recalculés à chaque message.
 - Ils ne sont donc **jamais résumés par M2**. En revanche, la réponse du tuteur qui s'en est servie fait partie de l'historique, et peut être résumée plus tard.
 - `/context` affiche la place qu'ils ont prise (`RAG 412`).
@@ -114,7 +114,7 @@ def fit_to_budget(chunks: list[str], max_tokens: int) -> list[str]:
     return kept
 ```
 
-`estimate_message` compte 1 token pour 3,5 caractères en écriture latine et **1 token par caractère japonais, chinois ou coréen**. C'est important pour des documents de cours de japonais : un morceau de 500 caractères en kanji coûte environ 500 tokens, pas 125.
+`estimate_message` compte 1 token pour 4,5 lettres latines, 1 pour 2 espaces, 1 par chiffre ou signe de ponctuation et **1 par caractère japonais, chinois ou coréen** (règle ajustée sur le vrai tokenizer, voir [memoire_contexte.md §4](memoire_contexte.md#4-estimation-des-tokens-memorytokenspy)). C'est important pour des documents de cours de japonais : un morceau de 500 caractères en kanji coûte environ 500 tokens, pas 125.
 
 **2. Ne jamais lever d'exception.**
 La boucle du chat n'attrape que les erreurs d'Ollama (`OllamaError`). Une autre exception levée par le retriever (fichier d'index manquant, erreur de base vectorielle…) **ferait planter le programme**. En cas de problème, il faut renvoyer une liste vide, et éventuellement afficher un avertissement sur `stderr`.
