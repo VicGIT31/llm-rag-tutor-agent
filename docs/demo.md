@@ -16,7 +16,9 @@ Le scénario a été répété deux fois dans la vraie CLI, le 5 octobre 2026 (`
 
 ## Avant de monter sur scène
 
-- [ ] `ollama serve` lancé, modèles présents : `ollama list` doit montrer `qwen3-coder:30b` et `bge-m3`.
+- [ ] **`python -m sensai.preflight --setup`** : vérifie Ollama et les modèles, le placement GPU/CPU (avec le réglage conseillé sans GPU), l'index, que chaque recherche de la démo ramène son document, la sandbox, crée les apprenants camille (japonais A1) et hugo (coréen A1), et préchauffe le modèle. Tout doit être ✓ ; un ✗ se règle avant de monter sur scène.
+- [ ] `ollama serve` lancé, modèles présents : `ollama list` doit montrer `qwen3-coder:30b` et `bge-m3`. `keep_alive` vaut 30 min dans `config.json` : le modèle ne se décharge pas pendant qu'on parle entre deux actes (le défaut d'Ollama, 5 min, coûterait un rechargement de 15 à 45 s en pleine démo).
+- [ ] Fermer les applications qui occupent la carte graphique (jeux, navigateur avec accélération) : chaque Go de VRAM pris ailleurs retire des couches du modèle au GPU.
 - [ ] **Ollama avec le GPU** (sous Arch : paquet `ollama-vulkan` ou `ollama-cuda`, puis redémarrer Ollama). Au lancement, Sensai affiche où Ollama a placé le modèle (« Modèle … chargé : 45 % GPU / 55 % CPU » ; badge dans l'en-tête de Duolingoy) : « CPU seul » veut dire que le GPU n'est pas utilisé. Sur CPU seul, un message de chat prend 30 à 45 s et une tâche d'agent environ 2 minutes. Sans GPU, mettre `"rag_rerank": false` et `"rag_min_cosine": 0.50` dans `config.json` fait gagner une quinzaine de secondes par message (réglage mesuré dans [rag.md §7](rag.md#7-tests)).
 - [ ] Partir d'une base propre : `rm -rf data workspace`, puis lancer avec `--user camille`.
 - [ ] **Préchauffer le modèle** : une première question hors scène (le chargement prend environ 13 s).
@@ -61,6 +63,10 @@ Puis on relance, comme le lendemain :
 ## Acte 2 — Un tuteur qui s'appuie sur mes cours (R1, R2, M2)
 
 ```text
+> /compare rag Qu'est-ce qui tombe à l'interro de vendredi ?
+> /rag search Qu'est-ce qui tombe à l'interro de vendredi ?
+> Combien coûte le voyage à Kyoto ?
+> Et l'acompte ?
 > /rag search Quelle est la différence entre wa et ga ?
 > /rag filter niveau=A2
 > Comment on compte des billets de train ?
@@ -72,7 +78,10 @@ Puis on relance, comme le lendemain :
 ```
 
 À montrer et à dire :
-- `/rag search` : pour chaque morceau de leçon, cosinus, BM25 et note du rerank, et **la raison** de chaque rejet (« cosinus 0.40 < 0.45 »). La leçon de **coréen** n'apparaît même pas : le profil de Camille (japonais) filtre les documents (R2) ;
+- **commencer par la preuve d'utilité** : `/compare rag` pose la même question avec et sans les leçons. Avec : la date, la salle B204, le programme (leçons 3 et 4) et le fait que wa et ga ne tombent pas, tirés de `interro_vendredi.md`. Sans : « je ne connais pas les détails de ton interro », ou une invention. Rien de cela n'est devinable : c'est le cas où le RAG est indispensable, et non un confort. Le benchmark le chiffre ([labo.md §4](labo.md#4-mesurer-lintérêt-du-rag--benchmarksrag_abpy)). Dans le navigateur, la même chose se fait avec l'onglet Labo puis le mode Comparer ;
+- sous la réponse, le badge **« ✓ N faits vérifiés dans tes leçons »** : la date, l'heure et la salle ont été retrouvées dans les extraits injectés, par le code, sans appel au modèle. S'il affiche « ⚠ absent de tes leçons », c'est le moment de dire que le tuteur s'est trompé et que le système l'a vu ;
+- **« Et l'acompte ? »** : trois mots qui ne veulent rien dire seuls. Le RAG les cherche avec le message précédent (`/context` affiche « Recherche élargie au message précédent ») et la réponse donne 450 € avant le 15 décembre. Le voyage montre aussi que le cours ne se limite pas aux leçons : planning, corrigés, devoirs et voyage sont indexés (23 documents, plus que la fenêtre de contexte entière, d'où le besoin de chercher plutôt que de tout envoyer) ;
+- `/rag search` : pour chaque morceau de leçon, cosinus, BM25 et note du rerank, **la raison** de chaque rejet (« cosinus 0.40 < 0.45 »), et « ↑ repêché par BM25 » pour un morceau sauvé par un mot rare (essayer `/rag search Que veut dire hatsuka ?`). Les leçons de **coréen** n'apparaissent même pas : le profil de Camille (japonais) filtre les documents (R2) ;
 - avec `niveau=A2`, la réponse s'appuie sur la leçon des compteurs (« Kippu o nimai kudasai ») ;
 - `/compress` puis `/summary` : les vieux échanges deviennent un résumé structuré (apprenant, vocabulaire, erreurs, en cours). Sur une session aussi courte, le résumé n'est pas plus petit que les messages : il faut le dire, et donner le vrai chiffre, celui du benchmark (4 faits sur 6 retrouvés avec la compression, 0 sur 6 sans) ;
 - `/context` **après un nouveau message** (il décrit le dernier envoi) : **une seule fenêtre partagée** entre le rôle, le profil, la mémoire, le résumé, les documents et l'historique, chacun avec sa part du budget. C'est notre code qui décide ce qui entre, pas Ollama qui coupe au hasard (M2).
@@ -115,7 +124,7 @@ Chiffres mesurés : [memoire_contexte.md §13](memoire_contexte.md#13-tests-et-m
   - le tuteur peut se tromper même avec la bonne leçon dans le contexte (« 1 billet = ippai » au lieu de « ichimai ») et **la mémoire hérite de ses erreurs** ;
   - un même mot peut être enregistré en kana et en romaji ;
   - le rerank juge mal les messages très courts (« Bonjour ! ») ;
-  - un petit corpus de 5 leçons.
+  - un corpus de 23 documents écrits pour la démo : assez grand pour dépasser la fenêtre de contexte, mais ce n'est pas encore le cours réel d'une classe.
 - **Ce qu'on ferait autrement** : mesurer avec le vrai modèle dès le début, et vérifier les opérations mémoire contre les documents du RAG.
 
 ---
