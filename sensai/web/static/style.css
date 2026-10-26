@@ -575,6 +575,8 @@ h2 {
   overflow-wrap: anywhere;
 }
 .tag-off { background: var(--accent-soft); color: var(--ink); }
+.tag-checked { background: var(--primary-soft); color: var(--ink); }
+.tag-unsupported { background: var(--danger-soft); color: var(--ink); }
 
 /* ---------- composer bars: switched-off features, comparison ---------- */
 

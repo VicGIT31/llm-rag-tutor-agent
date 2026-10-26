@@ -22,12 +22,12 @@ Fonctionne **hors ligne** : aucune police, bibliothèque ou image n'est chargée
 
 | Zone | Contenu | Features |
 |---|---|---|
-| Conversation | réponses en streaming, mises en forme (gras, listes, titres, tableaux, code) ; bouton **Stop** ; suggestions au démarrage ; messages déjà résumés grisés | B1, M2 |
+| Conversation | réponses en streaming, mises en forme (gras, listes, titres, tableaux, code) ; bouton **Stop** ; suggestions au démarrage ; messages déjà résumés grisés ; sous chaque réponse, les leçons utilisées et la **vérification des faits** (« ✓ 3 faits vérifiés dans tes leçons » ou « ⚠ absent de tes leçons : 29janvier ») | B1, M2, R2 |
 | Mode **Agent** | chaque étape (résumé, action, durée, résultat de la sandbox, refus de permission) ; **carte de confirmation** avec action, fichiers, diff coloré, risques, compte à rebours | A1, T2, T4, A3 |
 | Onglet **Progrès** | mots vus / maîtrisés / à réviser, boîtes de Leitner, erreurs récurrentes ; un mot faux s'oublie d'un clic | M3 |
 | Onglet **Contexte** | répartition de la fenêtre au dernier message (rôle, mémoire, résumé, leçons, historique, libre, réserve) et tokens comptés par Ollama ; leçons utilisées avec cosinus, BM25 et note de rerank ; résumé de session et bouton **Résumer maintenant** ; métriques | M2, R1, R2, EV3 |
 | Onglet **Labo** | interrupteurs des fonctionnalités (B1, M1, M2, M3, R1, R2) et démonstrations prêtes à lancer en mode Comparer ([labo.md](labo.md)) | toutes |
-| Mode **Comparer** | même question avec et sans une fonctionnalité, deux colonnes, leçons de chaque côté, arbitrage du modèle | toutes |
+| Mode **Comparer** | même question avec et sans une fonctionnalité, deux colonnes, leçons de chaque côté, vérification des faits du côté qui a des leçons, arbitrage du modèle | toutes |
 | Onglet **Profil** | apprenants (créer, choisir, supprimer) ; historique (série, activité sur 14 jours, sessions à lire ou reprendre) ; profil de l'apprenant (ajout, suppression) | M1 |
 | En-tête | changement de modèle sans redémarrer ; badge GPU / CPU (où Ollama a placé le modèle, mis à jour après chaque réponse) ; état (prêt, réfléchit, écrit, attend ta confirmation) | configuration |
 

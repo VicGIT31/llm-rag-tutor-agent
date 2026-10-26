@@ -346,7 +346,7 @@ function userMessage(text, summarized = false) {
 const featureLabel = (id) => app.state?.switches.find((f) => f.id === id)?.label ?? id;
 const fileName = (path) => path.split("/").pop();
 
-/** Under an answer: which features were switched off, which lessons were used. */
+/** Under an answer: which features were switched off, which lessons were used, whether its facts were found in them. */
 function msgTags(meta) {
   if (!meta) return null;
   const tags = [];
@@ -354,6 +354,14 @@ function msgTags(meta) {
   if (meta.sources?.length) {
     const files = [...new Set(meta.sources.map((s) => fileName(s.source)))];
     tags.push(h("span", { class: "tag tag-rag", title: "Leçons injectées dans le prompt", text: `📄 ${files.join(", ")}` }));
+  }
+  const check = meta.check;
+  if (check?.checked) {
+    tags.push(
+      check.unsupported.length
+        ? h("span", { class: "tag tag-unsupported", title: "Dates, heures, salles, prix ou notes de la réponse qui ne figurent pas dans les leçons utilisées : à vérifier", text: `⚠ absent de tes leçons : ${check.unsupported.join(", ")}` })
+        : h("span", { class: "tag tag-checked", title: "Dates, heures, salles, prix et notes de la réponse retrouvés dans les leçons utilisées", text: `✓ ${check.checked} fait${check.checked > 1 ? "s" : ""} vérifié${check.checked > 1 ? "s" : ""} dans tes leçons` }),
+    );
   }
   return tags.length ? h("div", { class: "msg-tags" }, tags) : null;
 }
@@ -645,6 +653,9 @@ function liveCompare(feature) {
         event.sources.length
           ? h("ul", { class: "compare-sources" }, event.sources.map((src) => h("li", { dataset: { key: `${src.source}#${src.part}` }, text: `📄 ${fileName(src.source)} · partie ${src.part + 1}` })))
           : h("div", { class: "muted", text: "aucune leçon dans le prompt" }),
+        event.check
+          ? msgTags({ check: event.check })
+          : null,
       );
     },
     verdict(event) {
@@ -742,7 +753,7 @@ async function sendChat(text) {
       },
       done: (event) => {
         answer.finish(event.interrupted, event.ollama?.output_tokens);
-        answer.tag({ off: event.off, sources: event.sources });
+        answer.tag({ off: event.off, sources: event.sources, check: event.check });
         renderTurn(event);
         if (event.placement) renderDevice(event.placement);
         setStatus("busy", "Mise à jour de la mémoire…");
