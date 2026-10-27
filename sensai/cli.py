@@ -3,6 +3,7 @@
 import re
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
@@ -118,6 +119,8 @@ class Chat:
         self.last_check: GroundingCheck | None = None  # facts of the last answer looked up in those chunks
         # Side messages ([mémoire : …], [compression …]): stderr in the terminal, events in the web UI.
         self.notify: Callable[[str], None] = lambda message: print(message, file=sys.stderr)
+        # Set by the web UI's « Stop » (the terminal closes the generator on Ctrl+C instead).
+        self.cancel: threading.Event | None = None
 
     @property
     def language(self) -> str:
@@ -548,14 +551,24 @@ class Chat:
     def stream(self, text: str) -> Iterator[str]:
         """B1: one chat turn; yields the answer piece by piece as Ollama generates it.
 
-        Closing the generator stops the generation: the part already received is
-        kept and memorized like a complete answer."""
+        Closing the generator, or setting `self.cancel`, stops the generation: the
+        part already received is kept and memorized like a complete answer, and so
+        is the part received before a lost connection (the error is raised after).
+        A message that got no answer at all (model unreachable, stopped before the
+        first word) is forgotten, so the next prompt does not hold two learner
+        turns in a row."""
         interaction_id = new_interaction_id()
         with self.logger.timed("chat_turn", interaction_id, session_id=self.session_id, input_chars=len(text)) as ev:
             messages = self._prepare(text)
             self.interrupted = False
             self.last_stats = stats = ChatStats()
+            if self.stopping():  # « Stop » during the retrieval: the model is not called
+                self.interrupted = True
+                ev["status"] = "interrupted"
+                self._drop_unanswered()
+                return
             parts: list[str] = []
+            error: OllamaError | None = None
             pieces = self.client.chat_stream(messages, stats, interaction_id=interaction_id)
             try:
                 for piece in pieces:
@@ -564,9 +577,28 @@ class Chat:
             except (GeneratorExit, KeyboardInterrupt):
                 self.interrupted = True
                 ev["status"] = "interrupted"
+            except OllamaError as exc:
+                if self.stopping():  # « Stop » cut the connection (OllamaClient.abort_streams)
+                    self.interrupted = True
+                    ev["status"] = "interrupted"
+                else:
+                    error = exc
             finally:
                 pieces.close()
+                if not parts:
+                    self._drop_unanswered()
             self._finish(text, "".join(parts), stats, ev)
+            if error is not None:
+                raise error
+
+    def stopping(self) -> bool:
+        return self.cancel is not None and self.cancel.is_set()
+
+    def _drop_unanswered(self) -> None:
+        """Forget the learner message that was just stored (the last of the history)."""
+        msg = self.history.pop()
+        if msg.id is not None:
+            self.store.delete_message(msg.id)
 
     def _prepare(self, text: str) -> list[dict]:
         """Store the learner's message, compress old turns if needed, build the prompt within the budget."""

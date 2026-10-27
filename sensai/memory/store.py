@@ -204,6 +204,19 @@ class MemoryStore:
                     (msg.content[:60], session_id),
                 )
 
+    def delete_message(self, message_id: int) -> None:
+        """Delete a message; the session title becomes its first remaining learner message again."""
+        with self.conn:
+            row = self.conn.execute("SELECT session_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+            if row is None:
+                return
+            self.conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            self.conn.execute(
+                """UPDATE sessions SET title = (SELECT substr(content, 1, 60) FROM messages
+                   WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 1) WHERE id = ?""",
+                (row["session_id"], row["session_id"]),
+            )
+
     def load_messages(self, session_id: int, after_id: int = 0) -> list[Message]:
         rows = self.conn.execute(
             "SELECT id, role, content, tokens, meta FROM messages WHERE session_id = ? AND id > ? ORDER BY id",

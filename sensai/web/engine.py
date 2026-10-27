@@ -154,15 +154,16 @@ class Engine:
             notify = chat.notify
             chat.notify = lambda message: events.put({"type": "notice", "text": message})
             self.approver.emit = events.put
-            self._active = cancel
+            self._active = chat.cancel = cancel
             try:
                 work(chat, events.put, cancel)
             except OllamaError as exc:
-                events.put({"type": "error", "message": str(exc)})
+                # « Stop » cuts the connection to Ollama: that is a stop, not an error
+                events.put({"type": "stopped"} if cancel.is_set() else {"type": "error", "message": str(exc)})
             except Exception as exc:  # report it, never let it kill the worker
                 events.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             finally:
-                self._active = None
+                self._active = chat.cancel = None
                 self.approver.emit = lambda event: None
                 chat.notify = notify
                 events.put(None)
@@ -176,6 +177,8 @@ class Engine:
         finally:
             if not finished:  # the page went away: stop the job and refuse what it waits for
                 cancel.set()
+                if self._active is cancel:  # still queued: nothing of ours to cut
+                    self.chat.client.abort_streams()
                 self.approver.refuse_all()
 
     def stop(self) -> None:
@@ -183,6 +186,7 @@ class Engine:
         active = self._active
         if active is not None:
             active.set()
+            self.chat.client.abort_streams()  # even before the first word (prompt evaluation)
         self.approver.refuse_all()
 
     def close(self) -> None:

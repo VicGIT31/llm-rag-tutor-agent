@@ -4,6 +4,7 @@ confirmations from the browser) and HTTP API (served by a real local uvicorn).
 No model: a scripted fake client stands in for Ollama.
 """
 
+import http.server
 import json
 import socket
 import tempfile
@@ -18,7 +19,7 @@ import uvicorn
 from sensai.config import Config
 from sensai.monitoring import load_events
 from sensai.observability import EventLogger
-from sensai.ollama_client import ModelNotFound, Placement
+from sensai.ollama_client import ChatStats, ModelNotFound, OllamaClient, OllamaUnavailable, Placement
 from sensai.web.app import create_app
 from sensai.web.engine import Engine
 
@@ -35,6 +36,8 @@ class FakeClient:
         self.answer = list(answer)
         self.steps: list[str] = []
         self.release: threading.Event | None = None  # when set, the stream waits after its first piece
+        self.silent = False  # the stream says nothing until abort_streams(), like a long prompt evaluation
+        self.cut = threading.Event()
 
     def check(self):
         if self.model.startswith("absent"):
@@ -46,7 +49,13 @@ class FakeClient:
     def placement(self):
         return Placement(1000, 400)  # Ollama put 40 % of the model on the GPU
 
+    def abort_streams(self):
+        self.cut.set()
+
     def chat_stream(self, messages, stats, purpose="chat", interaction_id=None):
+        if self.silent:
+            self.cut.wait(5)
+            raise OllamaUnavailable("connection lost during generation")
         for i, piece in enumerate(self.answer):
             if i == 1 and self.release is not None:
                 self.release.wait(5)
@@ -115,6 +124,18 @@ class EngineTest(WebTestCase):
         self.assertEqual(tokens, ["Neko ", "= chat"])
         history = self.engine.call(lambda chat: [m.content for m in chat.history])
         self.assertEqual(history, ["neko ?", "Neko = chat"])
+
+    def test_stop_before_the_first_word(self):
+        self.client.silent = True
+        threading.Timer(0.2, self.engine.stop).start()
+        start = time.perf_counter()
+        events = list(self.engine.chat_events("neko ?"))
+        self.assertLess(time.perf_counter() - start, 3)  # not the 5 s the stream would have waited
+        self.assertTrue(self.client.cut.is_set())
+        done = next(e for e in events if e["type"] == "done")
+        self.assertTrue(done["interrupted"])
+        self.assertNotIn("error", [e["type"] for e in events])
+        self.assertEqual(self.engine.call(lambda chat: chat.history), [])  # nothing answered: forgotten
 
     def test_agent_asks_the_browser_before_writing(self):
         target = str(self.workspace / "fiche.md")
@@ -339,3 +360,39 @@ class ApiTest(WebTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SilentOllama(http.server.BaseHTTPRequestHandler):
+    """Accepts a chat request, then says nothing for 5 s (a long prompt evaluation)."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        time.sleep(5)
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+        except OSError:
+            pass
+
+    def log_message(self, *args):
+        pass
+
+
+class AbortStreamTest(unittest.TestCase):
+    def test_abort_wakes_a_stream_waiting_for_its_first_word(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SilentOllama)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        client = OllamaClient(f"http://127.0.0.1:{server.server_port}", "fake", 2048)
+        stream = client.chat_stream([{"role": "user", "content": "neko ?"}], ChatStats())
+        threading.Timer(0.3, client.abort_streams).start()
+        start = time.perf_counter()
+        with self.assertRaises(OllamaUnavailable):
+            list(stream)
+        self.assertLess(time.perf_counter() - start, 3)
+        self.assertEqual(client._streams, set())

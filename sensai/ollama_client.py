@@ -1,6 +1,8 @@
 """Minimal streaming client for the Ollama HTTP API (/api/chat)."""
 
 import json
+import socket
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -75,6 +77,8 @@ class OllamaClient:
         self.timeout = timeout
         self.keep_alive = keep_alive
         self.logger = logger or NullLogger()
+        self._streams: set[requests.Response] = set()  # generations in progress, for abort_streams()
+        self._streams_lock = threading.Lock()
 
     def _log_call(
         self, purpose: str, interaction_id: str | None, start: float, stats: ChatStats, error: Exception | None
@@ -209,6 +213,24 @@ class OllamaClient:
         finally:
             self._log_call(purpose, interaction_id, start, stats, error)
 
+    def abort_streams(self) -> None:
+        """Cut the generations in progress; safe to call from another thread (« Stop » in the web UI).
+
+        Closing the response is not enough: it waits for the read it would interrupt, and
+        before the first word Ollama may stay silent for seconds (prompt evaluation). Shutting
+        the socket down wakes the reader at once (it raises OllamaUnavailable) and Ollama
+        stops generating when the client goes away. The socket is reached through urllib3
+        internals; if they change, the generation simply ends at the next word, as before."""
+        with self._streams_lock:
+            responses = list(self._streams)
+        for resp in responses:
+            sock = getattr(getattr(resp.raw, "_connection", None), "sock", None)
+            try:
+                if sock is not None:
+                    sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already closed
+
     def _chat_stream(self, messages: list[dict], stats: ChatStats) -> Iterator[str]:
         payload = self._payload(messages, stream=True)
         try:
@@ -216,6 +238,15 @@ class OllamaClient:
         except requests.RequestException as exc:
             raise OllamaUnavailable(f"connection to Ollama failed: {exc}") from exc
 
+        with self._streams_lock:
+            self._streams.add(resp)
+        try:
+            yield from self._read_stream(resp, stats)
+        finally:
+            with self._streams_lock:
+                self._streams.discard(resp)
+
+    def _read_stream(self, resp: requests.Response, stats: ChatStats) -> Iterator[str]:
         with resp:
             if resp.status_code != 200:
                 raise self._error_from(resp)

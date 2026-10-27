@@ -353,6 +353,44 @@ class CompareTest(ChatCase):
             list(compare(chat, "   ", "memory"))
 
 
+class UnansweredTurnTest(ChatCase):
+    def test_a_message_without_answer_is_forgotten(self):
+        chat = self.make_chat()
+        def unreachable(*args, **kwargs):  # a generator, like the real client: it fails when read
+            raise OllamaUnavailable("down")
+            yield
+
+        with mock.patch.object(self.client, "chat_stream", unreachable):
+            with self.assertRaises(OllamaUnavailable):
+                self.say("bonjour")
+        self.say("tu es là ?")
+        self.assertEqual([m["role"] for m in self.client.streamed[-1]], ["system", "user"])
+        stored = self.store.load_messages(chat.session_id)
+        self.assertEqual([(m.role, m.content) for m in stored][0], ("user", "tu es là ?"))
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(self.store.list_sessions("camille")[0].title, "tu es là ?")  # not the forgotten message
+
+    def test_a_partial_answer_is_kept_when_the_connection_is_lost(self):
+        chat = self.make_chat()
+
+        def cut_short(*args, **kwargs):
+            yield "Neko "
+            raise OllamaUnavailable("connection lost during generation")
+
+        with mock.patch.object(self.client, "chat_stream", cut_short):
+            with self.assertRaises(OllamaUnavailable):
+                self.say("neko ?")
+        self.assertEqual([(m.role, m.content) for m in chat.history], [("user", "neko ?"), ("assistant", "Neko ")])
+
+    def test_a_partial_answer_is_kept(self):
+        chat = self.make_chat()
+        turn = chat.stream("bonjour")
+        next(turn)
+        turn.close()
+        self.assertTrue(chat.interrupted)
+        self.assertEqual([m.role for m in chat.history], ["user", "assistant"])
+
+
 class LearnerTest(ChatCase):
     def test_switching_learners_isolates_profile_memory_and_sessions(self):
         chat = self.make_chat()
