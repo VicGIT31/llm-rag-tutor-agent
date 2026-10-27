@@ -16,6 +16,7 @@ from .agent.tools import ToolRegistry
 from .compare import compare, kept_sources
 from .config import Config, ConfigError, load_config
 from .context import ContextBuilder, ContextReport
+from .languages import canonical_language
 from .memory.compressor import CompressionError, Compressor, Summary, compress
 from .memory.extractor import ExtractionError, MemoryExtractor
 from .memory.learner import LearnerMemory
@@ -120,7 +121,8 @@ class Chat:
 
     @property
     def language(self) -> str:
-        return self.store.get_profile(self.config.user).get("langue_cible", "")
+        """The target language, under one name (« Japonais », « japanese » -> japonais)."""
+        return canonical_language(self.store.get_profile(self.config.user).get("langue_cible", ""))
 
     # --- feature switches (features.py) -----------------------------------
 

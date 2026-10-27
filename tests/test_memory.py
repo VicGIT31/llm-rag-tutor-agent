@@ -457,6 +457,17 @@ class LearnerMemoryTest(TmpDirTestCase):
     def box(self, word, lang="japonais"):
         return {w.word: w for w in self.mem.words("camille", lang)}[word]
 
+    def test_old_language_names_are_merged(self):
+        self.mem.upsert_word("camille", "Japonais", "neko", "chat")
+        self.mem.upsert_word("camille", "japanese", "inu", "chien")
+        self.mem.upsert_word("camille", "japonais", "neko", "chat (déjà là)")
+        self.mem.add_mistake("camille", "Coréen", "eun/neun", "sujet")
+        LearnerMemory(self.store.conn)  # what a restart does on an older database
+        self.assertEqual({w.word: w.translation for w in self.mem.words("camille", "japonais")},
+                         {"neko": "chat (déjà là)", "inu": "chien"})
+        self.assertEqual([m.pattern for m in self.mem.mistakes("camille", "coréen")], ["eun/neun"])
+        self.assertEqual(self.mem.words("camille", "Japonais"), [])
+
     def test_words_are_normalized(self):
         self.mem.upsert_word("camille", "japonais", "Inu", "chien")
         self.mem.upsert_word("camille", "japonais", " inu ", "le chien")
@@ -573,7 +584,9 @@ class LearnerMemoryTest(TmpDirTestCase):
 
     def test_word_shape_per_language(self):
         self.assertTrue(all(looks_like("japonais", w) for w in ("sanbon", "matcha", "shichi-ji", "irasshaimase", "日本語")))
+        self.assertTrue(all(looks_like("japonais", w) for w in ("tempura", "shimbun", "sempai")))  # traditional Hepburn
         self.assertFalse(any(looks_like("japonais", w) for w in ("transports", "assurance", "visites", "repas")))
+        self.assertFalse(any(looks_like("japonais", w) for w in ("temps", "lampe", "chambre", "combien")))
         self.assertTrue(looks_like("coréen", "annyeonghaseyo") and looks_like("coréen", "고양이"))
         self.assertFalse(looks_like("coréen", "vol"))
         # other languages are not checked: French accents in Spanish, pinyin with x and « à »

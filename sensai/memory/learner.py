@@ -17,6 +17,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 
+from ..languages import canonical_language
 from .tokens import CJK, estimate_message
 
 SCHEMA = """
@@ -80,12 +81,13 @@ TEXT_FIELDS = ["word", "translation", "pattern", "correction", "example", "key",
 
 
 # A Japanese word is noted in kana/kanji or in Hepburn rōmaji, whose shape is narrow:
-# (consonant) + vowel, a syllabic n, a doubled consonant for the small tsu. French words
+# (consonant) + vowel, a syllabic n (written m before b and p in traditional Hepburn:
+# tempura, shimbun), a doubled consonant for the small tsu. French words
 # (« vol », « avril », « transports ») cannot be written that way.
 _VOWELS = "aeiouāēīōūâêîôû"
 ROMAJI = re.compile(
     rf"(?:(?:sh|ch|ts|[kgnhbpmr]y|[kgsztdnhbpmyrwfj])?[{_VOWELS}]"  # ka, shi, kyo, tsu, fu, ji…
-    rf"|n(?![{_VOWELS}y])"  # syllabic n: sanbon, hon
+    rf"|n(?![{_VOWELS}y])|m(?=[bp])"  # syllabic n: sanbon, hon, tempura
     r"|([kgsztdpbcj])(?=\1)|t(?=ch))+"  # small tsu: ippon, kitte, matcha
 )
 # Korean revised romanization uses neither f, q, v, x, z nor accents.
@@ -102,14 +104,14 @@ def looks_like(language: str, word: str) -> bool:
 
     Only Japanese and Korean are checked; other languages (French accents in Spanish, pinyin
     with x, q and « à » in Chinese) always pass."""
-    lang = _plain(language)
+    lang = canonical_language(language)
     parts = [p for p in re.split(r"[\s\-'’]+", re.sub(r"[^\w\s\-'’]", "", norm(word))) if p]
     for part in parts:
         if CJK.search(part):  # kana, kanji, hangul
             continue
-        if lang in ("japonais", "japanese") and not ROMAJI.fullmatch(part):
+        if lang == "japonais" and not ROMAJI.fullmatch(part):
             return False
-        if lang in ("coreen", "korean") and NOT_KOREAN.search(part):
+        if lang == "coréen" and NOT_KOREAN.search(part):
             return False
     return True
 
@@ -170,6 +172,20 @@ class LearnerMemory:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.conn.executescript(SCHEMA)
+        self._canonicalize_languages()
+
+    def _canonicalize_languages(self) -> None:
+        """Databases written before languages had one name (« Japonais », « japanese »): move their
+        rows under the canonical name; a word already noted there keeps the canonical row."""
+        with self.conn:
+            for table in ("vocabulary", "mistakes"):
+                for (language,) in self.conn.execute(f"SELECT DISTINCT language FROM {table}").fetchall():
+                    canonical = canonical_language(language)
+                    if canonical != language:
+                        self.conn.execute(
+                            f"UPDATE OR IGNORE {table} SET language = ? WHERE language = ?", (canonical, language)
+                        )
+                        self.conn.execute(f"DELETE FROM {table} WHERE language = ?", (language,))
 
     # --- vocabulary -----------------------------------------------------
 
@@ -325,9 +341,10 @@ class LearnerMemory:
             if len(op.get("translation") or "") > MAX_TRANSLATION:
                 raise ValueError("traduction trop longue : une explication n'est pas une traduction")
             # Measured in real sessions: after answers about the trip, the model noted « voyage = voyage »,
-            # « acompte = acompte », then « vol = transport aérien », « avril = mois »… as Japanese words.
+            # « Kyoto = kyoto », then « vol = transport aérien », « avril = mois »… as Japanese words.
+            # A word identical to its translation (French word, place name, « sushi ») teaches nothing.
             if op.get("translation") and _plain(op["word"]) == _plain(op["translation"]):
-                raise ValueError(f"« {op['word']} » est traduit par lui-même : ce n'est pas un mot de la langue cible")
+                raise ValueError(f"« {op['word']} » est traduit par lui-même : rien à apprendre")
             if not looks_like(language, op["word"]):
                 raise ValueError(f"« {op['word']} » ne s'écrit pas en {language} (ni dans son écriture, ni en romanisation)")
         if name == "add_word":

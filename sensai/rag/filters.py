@@ -1,7 +1,7 @@
 """R2: metadata filters, applied BEFORE scoring so excluded chunks cost nothing.
 
 Syntax (same as the /rag filter command):
-    niveau=A1            equality, case-insensitive
+    niveau=A1            equality, ignoring case and accents
     niveau=A1,A2         one of several values
     date>=2026-09-01     ISO dates compare correctly as strings
     niveau<=B1           works for A1 < A2 < B1 < ... too
@@ -14,6 +14,8 @@ so general material without metadata is still found.
 import re
 from dataclasses import dataclass
 
+from ..languages import fold
+
 _EXPR = re.compile(r"^\s*([\w\-]+)\s*(>=|<=|=)\s*([^=<>\s].*?)\s*$")
 
 
@@ -21,7 +23,7 @@ _EXPR = re.compile(r"^\s*([\w\-]+)\s*(>=|<=|=)\s*([^=<>\s].*?)\s*$")
 class Filter:
     key: str
     op: str
-    values: tuple[str, ...]  # casefolded
+    values: tuple[str, ...]  # folded (see fold)
     soft: bool = False
 
     def __str__(self) -> str:
@@ -31,7 +33,7 @@ class Filter:
         have = meta.get(self.key)
         if have is None:
             return self.soft
-        have = have.casefold()
+        have = fold(have)
         if self.op == "=":
             return have in self.values
         if self.op == ">=":
@@ -44,7 +46,7 @@ def parse_filter(expr: str) -> Filter:
     if not m:
         raise ValueError(f"filtre invalide : {expr!r} (attendu clé=valeur, clé>=valeur ou clé<=valeur)")
     key, op, raw = m.groups()
-    values = tuple(v.strip().casefold() for v in raw.split(",") if v.strip())
+    values = tuple(fold(v.strip()) for v in raw.split(",") if v.strip())
     if not values:
         raise ValueError(f"filtre invalide : {expr!r} (valeur vide)")
     if op != "=" and len(values) != 1:

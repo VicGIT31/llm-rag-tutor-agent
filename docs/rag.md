@@ -52,7 +52,7 @@ date: 2026-09-30
 
 Ajoutés automatiquement : `source`, `title` (premier titre), `folder` (dossier parent), `date` (date de **modification du fichier**, à défaut). Ce défaut n'est fiable que sur une machine où les fichiers n'ont pas été recopiés : un `git clone` remet toutes les dates au jour du clone. Pour filtrer par date, écrire `date:` dans le front matter. Les dates doivent être en ISO (`AAAA-MM-JJ`), la comparaison est faite sur du texte.
 
-Filtre **strict** (`/rag filter`) : un document sans la clé est exclu. Filtre **souple** (déduit du profil, `rag_profile_filters`, par défaut `langue_cible → langue`) : un document sans la clé passe, pour que le matériel général reste trouvable. Un filtre explicite sur la même clé remplace le filtre du profil.
+Filtre **strict** (`/rag filter`) : un document sans la clé est exclu. Filtre **souple** (déduit du profil, `rag_profile_filters`, par défaut `langue_cible → langue`) : un document sans la clé passe, pour que le matériel général reste trouvable. Un filtre explicite sur la même clé remplace le filtre du profil. Les comparaisons ignorent la casse et les accents (`coreen` = `coréen`), et la langue du profil est ramenée à un seul nom (`sensai/languages.py` : « japanese », « Nihongo », « 日本語 » → `japonais`) ; sans cela, un profil écrit autrement excluait toutes les leçons, qui portent toutes une langue. La mémoire de l'apprenant (M3) utilise le même nom, et les anciennes bases sont migrées au démarrage.
 
 ## 3. Choix et alternatives écartées
 

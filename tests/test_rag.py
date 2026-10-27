@@ -202,6 +202,12 @@ class FilterTests(unittest.TestCase):
         soft = parse_filter("langue=japonais")
         self.assertTrue(type(soft)(soft.key, soft.op, soft.values, soft=True).matches({}))
 
+    def test_accents_and_case_are_ignored(self):
+        # a learner who types « coreen » or « Coréen » must still get the lessons tagged « coréen »
+        self.assertTrue(parse_filter("langue=coreen").matches({"langue": "coréen"}))
+        self.assertTrue(parse_filter("langue=Coréen").matches({"langue": "coreen"}))
+        self.assertFalse(parse_filter("langue=coreen").matches({"langue": "japonais"}))
+
     def test_invalid_filters(self):
         for bad in ("niveau", "=A1", "niveau=", "niveau==", "date>=1,2"):
             with self.assertRaises(ValueError):
@@ -276,6 +282,14 @@ class RetrievalTests(unittest.TestCase):
         rag.set_filters(["langue=coréen"])  # an explicit filter overrides the profile one
         sources = {h.chunk.source.rsplit("/", 1)[-1] for h in rag.search("kimchi neko", 2000)}
         self.assertEqual(sources, {"cuisine.md"})
+
+    def test_profile_language_under_another_name(self):
+        # « japanese » or « Nihongo » in the profile must not exclude every Japanese lesson
+        for written in ("japanese", "Nihongo", "日本語"):
+            rag = self.rag(profile={"langue_cible": written})
+            rag.config.rag_profile_filters = {"langue_cible": "langue"}
+            sources = {h.chunk.source.rsplit("/", 1)[-1] for h in rag.search("kimchi neko kippu légume", 2000)}
+            self.assertEqual(sources, {"animaux.md", "voyage.md"}, written)
 
     def test_token_budget_is_respected(self):
         rag = self.rag()

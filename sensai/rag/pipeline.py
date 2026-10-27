@@ -21,12 +21,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..config import Config
+from ..languages import canonical_language
 from ..memory.tokens import MESSAGE_OVERHEAD, estimate_tokens
 from ..observability import EventLogger, NullLogger
 from ..ollama_client import ChatStats, OllamaClient, OllamaError
 from .chunker import Chunk, chunk_markdown, load_documents
 from .embedder import OllamaEmbedder
-from .filters import Filter, matches_all, parse_filter
+from .filters import Filter, fold, matches_all, parse_filter
 from .lexical import bm25_scores, tokenize
 from .store import RagStore, StoredChunk
 
@@ -185,8 +186,10 @@ class Rag:
         profile = self.profile_fn() if self.profile_fn else {}
         for profile_key, meta_key in self.config.rag_profile_filters.items():
             value = profile.get(profile_key)
+            if value and profile_key == "langue_cible":
+                value = canonical_language(value)  # « japanese », « Nihongo » -> japonais
             if value and meta_key not in explicit:
-                active.append(Filter(meta_key, "=", (value.strip().casefold(),), soft=True))
+                active.append(Filter(meta_key, "=", (fold(value.strip()),), soft=True))
         return active
 
     # ------------------------------------------------------------------ retrieval
