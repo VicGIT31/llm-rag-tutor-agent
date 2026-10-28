@@ -1,4 +1,4 @@
-"""X1: the Duolingoy web UI — engine (one worker thread, streamed events, stop,
+"""X1: the DuolingoGo web UI — engine (one worker thread, streamed events, stop,
 confirmations from the browser) and HTTP API (served by a real local uvicorn).
 
 No model: a scripted fake client stands in for Ollama.
@@ -228,7 +228,7 @@ class ApiTest(WebTestCase):
     def test_page_and_assets(self):
         page = requests.get(self.url + "/", timeout=5)
         self.assertEqual(page.status_code, 200)
-        self.assertIn("<title>Duolingoy</title>", page.text)
+        self.assertIn("<title>DuolingoGo</title>", page.text)
         for asset in ("app.js", "style.css", "mascot.svg"):
             self.assertEqual(requests.get(f"{self.url}/static/{asset}", timeout=5).status_code, 200)
         self.assertEqual(requests.get(self.url + "/api/docs", timeout=5).status_code, 200)
@@ -238,7 +238,7 @@ class ApiTest(WebTestCase):
         self.assertEqual((types[0], types[-1]), ("token", "memory"))
         self.assertIn("done", types)
         state = requests.get(self.url + "/api/state", timeout=5).json()
-        self.assertEqual(state["app"], "Duolingoy")
+        self.assertEqual(state["app"], "DuolingoGo")
         self.assertEqual([m["content"] for m in state["messages"]], ["neko ?", "Neko = chat."])
         self.assertEqual(state["features"], {"memory": True, "compression": True, "rag": False, "agent": True})
         memory = requests.get(self.url + "/api/memory", timeout=5).json()

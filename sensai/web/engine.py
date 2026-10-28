@@ -1,4 +1,4 @@
-"""X1: the engine behind the Duolingoy web UI.
+"""X1: the engine behind the DuolingoGo web UI.
 
 The web UI drives the very same `Chat` as the terminal: same memory, RAG,
 compression and agent. Everything that object touches lives on ONE worker
@@ -95,7 +95,7 @@ class Engine:
         self._active: threading.Event | None = None  # cancel flag of the job being run
         ready: Future = Future()
         self._thread = threading.Thread(
-            target=self._work, args=(client, logger, ready), name="duolingoy-engine", daemon=True
+            target=self._work, args=(client, logger, ready), name="duolingogo-engine", daemon=True
         )
         self._thread.start()
         ready.result()
@@ -298,7 +298,7 @@ def state_snapshot(chat: Chat) -> dict:
     user = chat.config.user
     saved = chat.store.get_summary(chat.session_id)
     return {
-        "app": "Duolingoy",
+        "app": "DuolingoGo",
         "model": chat.client.model,
         "user": user,
         "session": chat.session_id,

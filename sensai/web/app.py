@@ -1,4 +1,4 @@
-"""X1: the Duolingoy web API (FastAPI) and its static front end.
+"""X1: the DuolingoGo web API (FastAPI) and its static front end.
 
 Local only, by design: the server listens on 127.0.0.1, rejects any other Host
 header (DNS rebinding) and only accepts JSON bodies, which a page from another
@@ -87,7 +87,7 @@ def not_blank(text: str) -> str:
 
 def create_app(engine: Engine, allowed_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(
-        title="Duolingoy",
+        title="DuolingoGo",
         description="Le tuteur de langues Sensai dans le navigateur, sur un modèle local Ollama.",
         docs_url="/api/docs",
         redoc_url=None,

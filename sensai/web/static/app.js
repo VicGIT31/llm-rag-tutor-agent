@@ -1,6 +1,6 @@
 "use strict";
 
-/* Duolingoy front end: plain JavaScript, no build step, and no request to
+/* DuolingoGo front end: plain JavaScript, no build step, and no request to
    anything but the local Sensai server (the app works offline).
    Everything the model or the learner writes is set as text, or goes through
    renderMarkdown(), which escapes HTML before adding its own tags. */
