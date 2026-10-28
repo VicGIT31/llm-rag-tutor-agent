@@ -51,7 +51,7 @@ Ollama (HTTP local)
 ```
 
 - **Un seul thread de travail.** Une connexion SQLite ne peut servir que dans le thread qui l'a ouverte, et un apprenant n'a qu'une conversation à la fois. Toutes les opérations sur le `Chat` passent donc par une file et s'exécutent dans l'ordre, sur ce thread.
-- **Deux opérations contournent la file**, parce que le thread de travail peut justement être bloqué en train de les attendre : **Stop** (un drapeau, vérifié à chaque morceau de réponse ou à chaque étape de l'agent) et la **réponse à une confirmation** (A3).
+- **Deux opérations contournent la file**, parce que le thread de travail peut justement être bloqué en train de les attendre : **Stop** (un drapeau, vérifié à chaque morceau de réponse ou à chaque étape de l'agent ; en conversation et en comparaison, il coupe aussi la connexion à Ollama, ce qui arrête la génération même avant le premier mot, pendant l'évaluation du prompt) et la **réponse à une confirmation** (A3).
 - **Streaming en Server-Sent Events.** Chaque événement est un objet JSON typé par `type` :
 
 | Flux | Événements |
@@ -110,7 +110,7 @@ Limite : aucune authentification. N'importe quel programme qui tourne sur la mac
 
 | Partie | Ce qui est vérifié |
 |---|---|
-| Moteur | ordre des événements d'un tour (morceaux, rapport, mémoire) ; Stop garde la partie affichée, en conversation comme en mémoire ; confirmation aller-retour depuis le « navigateur » (une seule réponse acceptée) ; Stop pendant une confirmation = refus et fin de tâche ; page fermée = refus, journalisé ; une panne devient un événement `error` et le thread survit ; changement de modèle vérifié, annulé en cas d'échec |
+| Moteur | ordre des événements d'un tour (morceaux, rapport, mémoire) ; Stop garde la partie affichée, en conversation comme en mémoire ; Stop avant le premier mot rend la main tout de suite et oublie le message resté sans réponse ; confirmation aller-retour depuis le « navigateur » (une seule réponse acceptée) ; Stop pendant une confirmation = refus et fin de tâche ; page fermée = refus, journalisé ; une panne devient un événement `error` et le thread survit ; changement de modèle vérifié, annulé en cas d'échec |
 | API HTTP | page, fichiers statiques, documentation ; conversation en SSE puis état et mémoire ; profil, sessions, compression ; confirmation de l'agent par HTTP ; **requêtes cross-site refusées** (formulaire, `text/plain`, `Host` étranger, aucun en-tête CORS) ; validation des entrées, modèles, métriques |
 
 Le rendu Markdown a été vérifié à part avec Node : `<script>`, `<img onerror>` et les tentatives d'injection d'attribut ressortent en texte.

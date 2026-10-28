@@ -1,6 +1,6 @@
 """Check, before a demo, that everything the keynote relies on works on this machine.
 
-    python -m sensai.preflight            # checks only, nothing is written
+    python -m sensai.preflight            # checks only (the RAG index is brought up to date, like at startup)
     python -m sensai.preflight --setup    # also creates the demo learners (camille, hugo)
 
 A local model is slow and the demo runs live: a model left on the CPU, an
