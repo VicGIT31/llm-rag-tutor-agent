@@ -1,36 +1,28 @@
 # Sensai
 
-A local language tutor in your terminal or in your browser (**Duolingoy**, its web interface), built on a model served by [Ollama](https://ollama.com) and modeled on Duolingo. It runs short exercises, corrects your mistakes and remembers your progress. In **agent mode** it can also prepare your study material: it reads your lessons, writes revision sheets and Python quizzes, runs them in a sandbox to check them, and always asks for your confirmation before changing anything.
+A local language tutor in your terminal or in your browser (**DuolingoGo**, its web interface), built on a model served by [Ollama](https://ollama.com). It runs short exercises, corrects your mistakes and remembers your progress. In **agent mode** it can also prepare your study material: it reads your lessons, writes revision sheets and Python quizzes, runs them in a sandbox to check them, and always asks for your confirmation before changing anything.
 
 No LLM framework is used: every model call goes straight to Ollama's HTTP API (`/api/chat`).
 
 ## Features
 
-| ID | Feature | Where |
-|---|---|---|
-| B1 | CLI chatbot with streamed answers, conversation history and error handling | `sensai/cli.py`, `sensai/ollama_client.py` |
-| M1 | Persistent sessions and learner profile (SQLite) | `sensai/memory/store.py` |
-| M2 | Token budget and compression of old turns; token estimates fitted on the model's real counts, and the budget recalibrated from the prompt size Ollama reports at each turn | `sensai/context.py`, `sensai/memory/compressor.py`, `sensai/memory/tokens.py` |
-| M3 | Structured learner memory: vocabulary with spaced repetition, recurring mistakes | `sensai/memory/learner.py`, `sensai/memory/extractor.py` |
-| **A1** | **ReAct reasoning loop**: analyse → action → observation → adjustment | `sensai/agent/react.py`, `sensai/agent/tools.py` |
-| **T2** | **Sandboxed code execution**: timeout, output cap, process isolation | `sensai/agent/sandbox.py` |
-| **T4** | **File access with permissions**: authorised folders, read-only/read-write, symlinks, extensions, sizes | `sensai/agent/permissions.py` |
-| **A3** | **Human-in-the-loop**: confirmation before any write, deletion or execution | `sensai/agent/approval.py` |
-| **EV3** | **Structured logs, secret masking and metrics** | `sensai/observability.py`, `sensai/monitoring.py` |
-| **R1** | **Basic RAG**: ingest lessons, chunk, embed (Ollama `/api/embed`), SQLite vector store, inject top chunks under a grounding instruction (use them, name the document, say when the answer is not there). Corpus: `docs/lecons/`, 23 lessons and class documents, larger than the context window | `sensai/rag/`, `sensai/context.py` |
-| **R2** | **Advanced RAG**: metadata filters, hybrid search (cosine + BM25), model reranking (one call, compact scores), per-chunk relevance gates, short follow-ups searched with the previous message, and **fact checking**: every date, time, room, price or score of a grounded answer is looked up in the lessons used, and flagged when absent | `sensai/rag/pipeline.py`, `sensai/rag/filters.py`, `sensai/rag/grounding.py`, `sensai/context.py` |
-| **X1** | **Web UI (Duolingoy)**: streamed chat, learner progress, live context usage and sources, agent mode with confirmations in the browser, model switching | `sensai/web/` |
-| **Lab** | **Learners & history**: several learner profiles, switch without restarting, streak, 14-day activity, read-only session preview | `sensai/memory/store.py`, `Chat.switch_user` |
-| **Lab** | **Feature switches**: turn history (B1), profile (M1), memory (M3), summary (M2), RAG (R1) and each R2 stage off at runtime; every answer records what was off | `sensai/features.py` |
-| **Lab** | **With / without comparison**: the same question answered with and without a feature, side by side, with each prompt's content and a model judge; RAG benchmark | `sensai/compare.py`, `benchmarks/rag_ab.py` |
-
-Detailed documentation:
-- [docs/memoire_contexte.md](docs/memoire_contexte.md): memory and context (B1, M1, M2, M3), with **user stories**;
-- [docs/rag.md](docs/rag.md): RAG pipeline, metadata, design choices, limits and **user stories** (R1, R2);
-- [docs/agent_securite_observabilite.md](docs/agent_securite_observabilite.md): agent, sandbox, permissions, confirmations and monitoring (A1, T2, T4, A3, EV3), with architecture, design choices, security limits, **user stories** and the keynote demo;
-- [docs/web.md](docs/web.md): Duolingoy, the web interface (X1): architecture, API, security, design choices and **user stories**;
-- [docs/labo.md](docs/labo.md): learners and history, feature switches, with/without comparison and its judge, the RAG benchmark, with **user stories**;
-- [docs/demo.md](docs/demo.md): the keynote scenario, one story in three acts covering every feature, with measured timings.
+| Feature | Where |
+|---|---|
+| CLI chatbot with streamed answers, conversation history and error handling | `sensai/cli.py`, `sensai/ollama_client.py` |
+| Persistent sessions and learner profile (SQLite) | `sensai/memory/store.py` |
+| Token budget and compression of old turns; token estimates fitted on the model's real counts, and the budget recalibrated from the prompt size Ollama reports at each turn | `sensai/context.py`, `sensai/memory/compressor.py`, `sensai/memory/tokens.py` |
+| Structured learner memory: vocabulary with spaced repetition, recurring mistakes | `sensai/memory/learner.py`, `sensai/memory/extractor.py` |
+| **ReAct reasoning loop**: analyse → action → observation → adjustment | `sensai/agent/react.py`, `sensai/agent/tools.py` |
+| **Sandboxed code execution**: timeout, output cap, process isolation | `sensai/agent/sandbox.py` |
+| **File access with permissions**: authorised folders, read-only/read-write, symlinks, extensions, sizes | `sensai/agent/permissions.py` |
+| **Human-in-the-loop**: confirmation before any write, deletion or execution | `sensai/agent/approval.py` |
+| **Structured logs, secret masking and metrics** | `sensai/observability.py`, `sensai/monitoring.py` |
+| **Basic RAG**: ingest lessons, chunk, embed (Ollama `/api/embed`), SQLite vector store, inject top chunks under a grounding instruction (use them, name the document, say when the answer is not there). Corpus: `docs/lecons/`, 23 lessons and class documents, larger than the context window | `sensai/rag/`, `sensai/context.py` |
+| **Advanced RAG**: metadata filters, hybrid search (cosine + BM25), model reranking (one call, compact scores), per-chunk relevance gates, short follow-ups searched with the previous message, and **fact checking**: every date, time, room, price or score of a grounded answer is looked up in the lessons used, and flagged when absent | `sensai/rag/pipeline.py`, `sensai/rag/filters.py`, `sensai/rag/grounding.py`, `sensai/context.py` |
+| **Web UI (DuolingoGo)**: streamed chat, learner progress, live context usage and sources, agent mode with confirmations in the browser, model switching | `sensai/web/` |
+| **Learners & history**: several learner profiles, switch without restarting, streak, 14-day activity, read-only session preview | `sensai/memory/store.py`, `Chat.switch_user` |
+| **Feature switches**: turn history, profile, memory, summary, RAG and each advanced-RAG stage off at runtime; every answer records what was off | `sensai/features.py` |
+| **With / without comparison**: the same question answered with and without a feature, side by side, with each prompt's content and a model judge; RAG benchmark | `sensai/compare.py`, `benchmarks/rag_ab.py` |
 
 ## Installation
 
@@ -53,7 +45,7 @@ GPU or CPU is Ollama's choice, made automatically: it puts as much of the model 
 .venv/bin/python -m sensai --user camille --db data/camille.db
 ```
 
-In the browser, with **Duolingoy** (same options as the CLI, plus `--port`; see [docs/web.md](docs/web.md)):
+In the browser, with **DuolingoGo** (same options as the CLI, plus `--port`):
 
 ```bash
 .venv/bin/python -m sensai.web                      # then open http://127.0.0.1:8000
@@ -68,7 +60,7 @@ Chat commands (full list with `/help`):
 |---|---|
 | `/profile set langue_cible japonais` | fill in the learner profile |
 | `/vocab`, `/mistakes`, `/summary`, `/context` | learner memory and context (`/context`: how the last prompt was filled, the real token count from Ollama, the calibration and the RAG query) |
-| `/agent <task>` | agent mode (A1): tools, sandbox, confirmations |
+| `/agent <task>` | agent mode: tools, sandbox, confirmations |
 | `/users`, `/user <name>` | list learners, switch to one (created if new; resumes its latest session) |
 | `/features`, `/feature rag off`, `/feature reset` | feature switches: cut a feature to see what it brings |
 | `/compare rag <question>` | the same question with and without a feature, side by side (nothing is stored) |
@@ -128,11 +120,11 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 | `sandbox_timeout` / `sandbox_max_output` | 10 s / 8000 | limits for one execution |
 | `confirm_actions` | `write`, `delete`, `execute` | actions that need confirmation (`write` and `delete` always do) |
 | `confirm_timeout` | 300 | after this many seconds with no answer, the action is refused |
-| `rag_sources` / `rag_embed_model` | `["docs/lecons"]` / `bge-m3` | indexed files or folders, embedding model (R1) |
-| `rag_top_k` / `rag_candidates` / `rag_share` | 4 / 4 / 0.25 | chunks injected, chunks reranked (4 is as accurate as 8 on the 49-query benchmark, with a rerank prompt half as long), share of the token budget (R1/R2) |
-| `rag_min_cosine` / `rag_rerank` / `rag_min_rerank` | 0.30 / true / 0.5 | relevance gates; **calibrate with `/rag search`** (R2); `config.json` uses 0.45 for bge-m3 |
+| `rag_sources` / `rag_embed_model` | `["docs/lecons"]` / `bge-m3` | indexed files or folders, embedding model |
+| `rag_top_k` / `rag_candidates` / `rag_share` | 4 / 4 / 0.25 | chunks injected, chunks reranked (4 is as accurate as 8 on the 49-query benchmark, with a rerank prompt half as long), share of the token budget |
+| `rag_min_cosine` / `rag_rerank` / `rag_min_rerank` | 0.30 / true / 0.5 | relevance gates; **calibrate with `/rag search`**; `config.json` uses 0.45 for bge-m3 |
 | `rag_min_bm25` | 0 (3.0 in `config.json`) | gate 1 rescue: a chunk at the top of BM25 with at least this score passes despite a low cosine (a rare word, a room number); 3.0 is the score of a word found in at most 3 chunks out of 76 |
-| `rag_hybrid` | true | fuse BM25 with the cosine ranking (R2); like `memory`, `compression` and `rag_rerank`, it is only the startup value of a switch |
+| `rag_hybrid` | true | fuse BM25 with the cosine ranking; like `memory`, `compression` and `rag_rerank`, it is only the startup value of a switch |
 | `rag_followup_words` | 6 | a message shorter than this (« Et l'acompte ? ») is searched together with the learner's previous one; 0 = off |
 | `log_path` / `log_content_chars` | `data/logs/sensai.jsonl` / 120 | event log and longest text excerpt it keeps |
 
@@ -143,13 +135,4 @@ Everything lives in `config.json` (CLI arguments take precedence over it). Main 
 SENSAI_DOCKER_TESTS=1 .venv/bin/python -m unittest tests.test_sandbox   # + Docker backend, if the daemon is running
 ```
 
-The tests use no network and no model: the ReAct loop, the compression (M2) and the memory extraction (M3) are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (M2, M3, and the RAG: without it, cosine only, hybrid, full pipeline, and the whole corpus in the prompt); their results are in [docs/memoire_contexte.md](docs/memoire_contexte.md#13-tests-et-mesures) and [docs/labo.md](docs/labo.md#4-mesurer-lintérêt-du-rag--benchmarksrag_abpy).
-
-## User stories
-
-At least two per feature, with acceptance criteria:
-- B1, M1, M2, M3: [docs/memoire_contexte.md](docs/memoire_contexte.md#12-user-stories);
-- R1, R2: [docs/rag.md](docs/rag.md#6-user-stories);
-- X1: [docs/web.md](docs/web.md#8-user-stories);
-- learners & history, feature switches, comparison: [docs/labo.md](docs/labo.md#9-user-stories);
-- A1, T2, T4, A3, EV3: [docs/agent_securite_observabilite.md](docs/agent_securite_observabilite.md#9-user-stories).
+The tests use no network and no model: the ReAct loop, the compression and the memory extraction are driven by a scripted fake model, while the permission layer, the sandbox, the confirmations, the SQLite memory and the web server (a real local uvicorn, queried over HTTP) are the real ones. Benchmarks that need Ollama live in `benchmarks/` (memory, extraction, and the RAG: without it, cosine only, hybrid, full pipeline, and the whole corpus in the prompt).
